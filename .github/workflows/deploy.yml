@@ -38,15 +38,15 @@ jobs:
           sed -i "s|__AZURE_TENANT_ID__|${{ secrets.AZURE_TENANT_ID }}|g" src/environments/environment.prod.ts
 
       - name: Build for production
-        run: npx ng build --configuration=production --base-href /intimaPic/
+        run: npx ng build --configuration=production --base-href /intimaPic/ --output-path dist/app
 
       - name: Copy index.html to 404.html (SPA routing)
-        run: cp dist/photosafe/browser/index.html dist/photosafe/browser/404.html
+        run: cp dist/app/browser/index.html dist/app/browser/404.html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: dist/photosafe/browser
+          path: dist/app/browser
 
   deploy:
     environment:
