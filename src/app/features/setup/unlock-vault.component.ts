@@ -1,0 +1,279 @@
+import { Component, inject, signal, OnInit } from '@angular/core';
+import { Router } from '@angular/router';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { VaultService } from '../../core/vault/vault.service';
+import { BiometricAuthService } from '../../core/biometric/biometric-auth.service';
+import { ImportScanService } from '../../core/album/import-scan.service';
+import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
+
+@Component({
+  selector: 'app-unlock-vault',
+  standalone: true,
+  imports: [
+    FormsModule,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatInputModule,
+    MatIconModule,
+    MatProgressSpinnerModule,
+  ],
+  template: `
+    <div class="unlock-container">
+      <div class="unlock-hero">
+        <mat-icon class="hero-icon">lock</mat-icon>
+        <h2>Tresor entsperren</h2>
+        <p class="description">
+          @if (biometricAvailable()) {
+            Verwende Biometrie oder gib dein Passwort ein.
+          } @else {
+            Gib dein Passwort ein, um auf deine Fotos zuzugreifen.
+          }
+        </p>
+      </div>
+
+      @if (biometricAvailable()) {
+        <div class="biometric-section">
+          <button mat-raised-button color="primary"
+                  class="biometric-btn"
+                  [disabled]="loading()"
+                  (click)="unlockWithBiometric()">
+            @if (loading() && biometricLoading()) {
+              <mat-spinner diameter="20"></mat-spinner>
+            } @else {
+              <ng-container>
+                <mat-icon>fingerprint</mat-icon>
+                Mit Biometrie entsperren
+              </ng-container>
+            }
+          </button>
+
+          <div class="divider">
+            <span>oder</span>
+          </div>
+        </div>
+      }
+
+      <form (ngSubmit)="unlock()" class="form">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Passwort</mat-label>
+          <input matInput
+                 [type]="hidePassword() ? 'password' : 'text'"
+                 [(ngModel)]="password"
+                 name="password"
+                 required
+                 autocomplete="current-password"
+                 (keyup.enter)="unlock()">
+          <button mat-icon-button matSuffix type="button"
+                  (click)="hidePassword.set(!hidePassword())">
+            <mat-icon>{{ hidePassword() ? 'visibility_off' : 'visibility' }}</mat-icon>
+          </button>
+        </mat-form-field>
+
+        @if (error()) {
+          <p class="error">{{ error() }}</p>
+        }
+
+        <button mat-raised-button type="submit"
+                [disabled]="loading() || !password"
+                class="full-width unlock-btn"
+                [color]="biometricAvailable() ? undefined : 'primary'">
+          @if (loading() && !biometricLoading()) {
+            <mat-spinner diameter="20"></mat-spinner>
+          } @else {
+            Entsperren
+          }
+        </button>
+      </form>
+
+      <button mat-button class="reset-link" (click)="resetVault()">
+        Tresor zurücksetzen
+      </button>
+    </div>
+  `,
+  styles: [`
+    .unlock-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+
+    .unlock-hero {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    .hero-icon {
+      font-size: 56px;
+      width: 56px;
+      height: 56px;
+      color: var(--mat-sys-primary);
+      margin-bottom: 1rem;
+    }
+
+    h2 {
+      font-weight: 400;
+      margin: 0 0 0.5rem 0;
+    }
+
+    .description {
+      opacity: 0.7;
+      margin: 0;
+    }
+
+    .biometric-section {
+      width: 100%;
+      max-width: 320px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-bottom: 0.5rem;
+    }
+
+    .biometric-btn {
+      width: 100%;
+      height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      margin: 1.25rem 0;
+      gap: 1rem;
+    }
+
+    .divider::before,
+    .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--mat-sys-outline-variant);
+    }
+
+    .divider span {
+      font-size: 0.8rem;
+      opacity: 0.6;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .form {
+      width: 100%;
+      max-width: 320px;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .full-width {
+      width: 100%;
+    }
+
+    .unlock-btn {
+      height: 48px;
+      margin-top: 0.5rem;
+    }
+
+    .error {
+      color: var(--mat-sys-error);
+      font-size: 0.875rem;
+      margin: 0;
+      text-align: center;
+    }
+
+    .reset-link {
+      margin-top: 2rem;
+      opacity: 0.6;
+    }
+  `]
+})
+export class UnlockVaultComponent implements OnInit {
+  private readonly router = inject(Router);
+  private readonly vaultService = inject(VaultService);
+  private readonly biometricAuth = inject(BiometricAuthService);
+  private readonly importScanService = inject(ImportScanService);
+  private readonly thumbnailSync = inject(ThumbnailSyncService);
+
+  password = '';
+  hidePassword = signal(true);
+  loading = signal(false);
+  biometricLoading = signal(false);
+  biometricAvailable = signal(false);
+  error = signal<string | null>(null);
+
+  async ngOnInit(): Promise<void> {
+    const available = await this.vaultService.isBiometricAvailable();
+    this.biometricAvailable.set(available);
+  }
+
+  async unlockWithBiometric(): Promise<void> {
+    this.loading.set(true);
+    this.biometricLoading.set(true);
+    this.error.set(null);
+
+    const success = await this.vaultService.unlockWithBiometric();
+
+    if (success) {
+      await this.postUnlock();
+    } else {
+      this.loading.set(false);
+      this.biometricLoading.set(false);
+      this.error.set(this.vaultService.error() || 'Biometrische Authentifizierung fehlgeschlagen.');
+    }
+  }
+
+  async unlock(): Promise<void> {
+    if (!this.password) return;
+
+    this.loading.set(true);
+    this.biometricLoading.set(false);
+    this.error.set(null);
+
+    const success = await this.vaultService.unlockVault(this.password);
+
+    if (success) {
+      await this.postUnlock();
+    } else {
+      this.loading.set(false);
+      this.error.set(this.vaultService.error() || 'Entsperren fehlgeschlagen.');
+    }
+  }
+
+  async resetVault(): Promise<void> {
+    if (confirm('Tresor wirklich zurücksetzen? Deine lokalen Einstellungen werden gelöscht. Die verschlüsselten Daten bleiben in der Cloud erhalten.')) {
+      await this.vaultService.reset();
+      this.router.navigate(['/setup/welcome']);
+    }
+  }
+
+  private async postUnlock(): Promise<void> {
+    // Scan root for unsorted photos (from iOS Shortcuts/Cryptomator import)
+    const hasUnsorted = await this.importScanService.scanRoot();
+
+    this.loading.set(false);
+    this.biometricLoading.set(false);
+
+    if (hasUnsorted) {
+      // Don't start thumbnail sync now — the import wizard will trigger it
+      // after the user has finished sorting. Running it in parallel causes
+      // OneDrive throttle contention (409 conflicts / blocked requests).
+      this.router.navigate(['/import-wizard']);
+    } else {
+      // No unsorted photos — safe to start thumbnail sync in background
+      this.thumbnailSync.syncAll();
+      this.router.navigate(['/gallery']);
+    }
+  }
+}
