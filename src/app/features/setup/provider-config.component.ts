@@ -257,7 +257,7 @@ export class ProviderConfigComponent implements OnInit {
   s3BucketName = '';
   s3Region = 'eu-central-1';
 
-  redirectUri = window.location.origin;
+  redirectUri = document.baseURI.replace(/\/$/, '') + '/auth-redirect';
 
   ngOnInit(): void {
     const stored = sessionStorage.getItem('intimapic_selected_provider') as StorageProviderType | null;

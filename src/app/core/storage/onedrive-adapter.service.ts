@@ -543,7 +543,8 @@ export class OneDriveAdapter implements StorageAdapter {
           // Use the MSAL v5 redirect bridge route as the popup redirect URI.
           // This route calls broadcastResponseToMainFrame() which relays the
           // auth response back to the parent window and closes the popup.
-          redirectUri: `${window.location.origin}/auth-redirect`,
+          // Use document.baseURI to respect the app's base-href (e.g. /intimaPic/).
+          redirectUri: new URL('auth-redirect', document.baseURI).href,
         },
         cache: {
           cacheLocation: BrowserCacheLocation.LocalStorage,
