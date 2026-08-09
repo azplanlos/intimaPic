@@ -5,9 +5,9 @@ import {
 import { Router, ActivatedRoute } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
-import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { PhotoService, type PhotoItem } from '../../core/album/photo.service';
+import { ToolbarService } from '../../shared/toolbar.service';
 import PhotoSwipe from 'photoswipe';
 
 @Component({
@@ -16,21 +16,9 @@ import PhotoSwipe from 'photoswipe';
   imports: [
     MatButtonModule,
     MatIconModule,
-    MatToolbarModule,
     MatProgressSpinnerModule,
   ],
   template: `
-    <mat-toolbar color="primary">
-      <button mat-icon-button (click)="goBack()">
-        <mat-icon>arrow_back</mat-icon>
-      </button>
-      <span class="toolbar-title">{{ albumName() }}</span>
-      <span class="spacer"></span>
-      <button mat-icon-button (click)="goUpload()">
-        <mat-icon>add_photo_alternate</mat-icon>
-      </button>
-    </mat-toolbar>
-
     @if (loading()) {
       <div class="loading">
         <mat-spinner diameter="40"></mat-spinner>
@@ -69,9 +57,6 @@ import PhotoSwipe from 'photoswipe';
     }
   `,
   styles: [`
-    .toolbar-title { margin-left: 0.5rem; font-weight: 400; }
-    .spacer { flex: 1; }
-
     .loading, .empty {
       display: flex;
       flex-direction: column;
@@ -123,6 +108,7 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly photoService = inject(PhotoService);
+  private readonly toolbar = inject(ToolbarService);
 
   @ViewChildren('photoCell') photoCells!: QueryList<ElementRef>;
 
@@ -148,7 +134,15 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
       this.albumId.set(params['id'] || '');
     });
     this.route.queryParams.subscribe(params => {
-      this.albumName.set(params['name'] || 'Album');
+      const name = params['name'] || 'Album';
+      this.albumName.set(name);
+      this.toolbar.set({
+        title: name,
+        backAction: () => this.goBack(),
+        actions: [
+          { icon: 'add_photo_alternate', label: 'Fotos hochladen', callback: () => this.goUpload() }
+        ],
+      });
     });
   }
 
@@ -163,6 +157,7 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   ngOnDestroy(): void {
+    this.toolbar.reset();
     this.observer?.disconnect();
     this.lightboxClosing = true;
     this.abortAllSlides();

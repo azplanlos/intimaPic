@@ -3,15 +3,10 @@ import { Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
-import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatListModule } from '@angular/material/list';
-import { MatDialogModule, MatDialog } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { MatMenuModule } from '@angular/material/menu';
-import { MatFabButton } from '@angular/material/button';
-import { VaultService } from '../../core/vault/vault.service';
 import { AlbumService, type Album } from '../../core/album/album.service';
 
 @Component({
@@ -21,34 +16,12 @@ import { AlbumService, type Album } from '../../core/album/album.service';
     FormsModule,
     MatButtonModule,
     MatIconModule,
-    MatToolbarModule,
     MatListModule,
-    MatDialogModule,
     MatFormFieldModule,
     MatInputModule,
     MatProgressSpinnerModule,
-    MatMenuModule,
   ],
   template: `
-    <mat-toolbar color="primary">
-      <mat-icon>photo_library</mat-icon>
-      <span class="toolbar-title">IntimaPic</span>
-      <span class="spacer"></span>
-      <button mat-icon-button [matMenuTriggerFor]="settingsMenu" aria-label="Menü">
-        <mat-icon>more_vert</mat-icon>
-      </button>
-      <mat-menu #settingsMenu="matMenu">
-        <button mat-menu-item (click)="openBiometricSettings()">
-          <mat-icon>fingerprint</mat-icon>
-          <span>Biometrie verwalten</span>
-        </button>
-        <button mat-menu-item (click)="lock()">
-          <mat-icon>lock</mat-icon>
-          <span>Tresor sperren</span>
-        </button>
-      </mat-menu>
-    </mat-toolbar>
-
     <div class="gallery-container">
       @if (loading()) {
         <div class="loading">
@@ -112,12 +85,6 @@ import { AlbumService, type Album } from '../../core/album/album.service';
     </div>
   `,
   styles: [`
-    .toolbar-title {
-      margin-left: 0.5rem;
-      font-weight: 400;
-    }
-    .spacer { flex: 1; }
-
     .gallery-container {
       padding: 1.5rem;
       max-width: 700px;
@@ -204,7 +171,6 @@ import { AlbumService, type Album } from '../../core/album/album.service';
 })
 export class GalleryPlaceholderComponent implements OnInit {
   private readonly router = inject(Router);
-  private readonly vaultService = inject(VaultService);
   private readonly albumService = inject(AlbumService);
 
   albums = this.albumService.albums;
@@ -242,14 +208,5 @@ export class GalleryPlaceholderComponent implements OnInit {
     this.router.navigate(['/album', album.directoryId], {
       queryParams: { name: album.name }
     });
-  }
-
-  async lock(): Promise<void> {
-    await this.vaultService.lockVault();
-    this.router.navigate(['/setup/unlock']);
-  }
-
-  openBiometricSettings(): void {
-    this.router.navigate(['/settings/biometric']);
   }
 }

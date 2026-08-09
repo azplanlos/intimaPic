@@ -11,8 +11,7 @@ import { VaultService } from '../../core/vault/vault.service';
   template: `
     <div class="welcome-container">
       <div class="welcome-hero">
-        <mat-icon class="hero-icon">photo_library</mat-icon>
-        <h1>IntimaPic</h1>
+        <img src="assets/app-logo.png" alt="IntimaPic Logo" class="hero-logo">
         <p class="subtitle">Deine Fotos. Ende-zu-Ende verschlüsselt.</p>
       </div>
 
@@ -48,12 +47,11 @@ import { VaultService } from '../../core/vault/vault.service';
       margin-bottom: 3rem;
     }
 
-    .hero-icon {
-      font-size: 72px;
-      width: 72px;
-      height: 72px;
-      color: var(--mat-sys-primary);
-      margin-bottom: 1rem;
+    .hero-logo {
+      width: 180px;
+      height: 180px;
+      margin-bottom: 1.5rem;
+      border-radius: 24px;
     }
 
     h1 {

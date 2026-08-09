@@ -25,7 +25,7 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
   template: `
     <div class="unlock-container">
       <div class="unlock-hero">
-        <mat-icon class="hero-icon">lock</mat-icon>
+        <img src="assets/app-logo.png" alt="IntimaPic Logo" class="hero-logo">
         <h2>Tresor entsperren</h2>
         <p class="description">
           @if (biometricAvailable()) {
@@ -110,12 +110,11 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
       margin-bottom: 2rem;
     }
 
-    .hero-icon {
-      font-size: 56px;
-      width: 56px;
-      height: 56px;
-      color: var(--mat-sys-primary);
+    .hero-logo {
+      width: 120px;
+      height: 120px;
       margin-bottom: 1rem;
+      border-radius: 20px;
     }
 
     h2 {
