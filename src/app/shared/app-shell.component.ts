@@ -4,7 +4,9 @@ import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatMenuModule } from '@angular/material/menu';
+import { MatDividerModule } from '@angular/material/divider';
 import { VaultService } from '../core/vault/vault.service';
+import { VaultRegistryService } from '../core/vault/vault-registry.service';
 import { ToolbarService } from './toolbar.service';
 
 @Component({
@@ -16,6 +18,7 @@ import { ToolbarService } from './toolbar.service';
     MatIconModule,
     MatButtonModule,
     MatMenuModule,
+    MatDividerModule,
   ],
   template: `
     <mat-toolbar class="app-toolbar">
@@ -38,6 +41,23 @@ import { ToolbarService } from './toolbar.service';
         <mat-icon>more_vert</mat-icon>
       </button>
       <mat-menu #appMenu="matMenu">
+        @if (registry.activeVault(); as vault) {
+          <div class="active-vault-info" mat-menu-item disabled>
+            <mat-icon>shield</mat-icon>
+            <span>{{ vault.name }}</span>
+          </div>
+        }
+        @if (registry.hasMultipleVaults()) {
+          <button mat-menu-item (click)="switchVault()">
+            <mat-icon>swap_horiz</mat-icon>
+            <span>Tresor wechseln</span>
+          </button>
+        }
+        <button mat-menu-item (click)="addVault()">
+          <mat-icon>add</mat-icon>
+          <span>Neuen Tresor hinzufügen</span>
+        </button>
+        <mat-divider></mat-divider>
         <button mat-menu-item (click)="openBiometricSettings()">
           <mat-icon>fingerprint</mat-icon>
           <span>Biometrie verwalten</span>
@@ -85,16 +105,36 @@ import { ToolbarService } from './toolbar.service';
       flex: 1;
       overflow-y: auto;
     }
+
+    .active-vault-info {
+      opacity: 0.7;
+      font-size: 0.85rem;
+    }
   `]
 })
 export class AppShellComponent {
   protected readonly toolbar = inject(ToolbarService);
+  protected readonly registry = inject(VaultRegistryService);
   private readonly router = inject(Router);
   private readonly vaultService = inject(VaultService);
 
   async lock(): Promise<void> {
     await this.vaultService.lockVault();
-    this.router.navigate(['/setup/unlock']);
+    if (this.registry.hasMultipleVaults()) {
+      this.router.navigate(['/setup/vault-select']);
+    } else {
+      this.router.navigate(['/setup/unlock']);
+    }
+  }
+
+  async switchVault(): Promise<void> {
+    await this.vaultService.lockVault();
+    this.router.navigate(['/setup/vault-select']);
+  }
+
+  addVault(): void {
+    sessionStorage.setItem('intimapic_adding_new_vault', 'true');
+    this.router.navigate(['/setup/welcome']);
   }
 
   openBiometricSettings(): void {

@@ -92,18 +92,21 @@ export class WelcomeComponent implements OnInit {
   private readonly vaultService = inject(VaultService);
 
   ngOnInit(): void {
-    // If vault already exists, redirect to unlock
-    if (this.vaultService.status() === 'locked') {
+    // If vault already exists and user didn't explicitly choose to add a new vault, redirect to unlock
+    const addingNewVault = sessionStorage.getItem('intimapic_adding_new_vault') === 'true';
+    if (this.vaultService.status() === 'locked' && !addingNewVault) {
       this.router.navigate(['/setup/unlock']);
     }
   }
 
   createNew(): void {
+    sessionStorage.removeItem('intimapic_adding_new_vault');
     sessionStorage.setItem('intimapic_setup_mode', 'create');
     this.router.navigate(['/setup/provider']);
   }
 
   connectExisting(): void {
+    sessionStorage.removeItem('intimapic_adding_new_vault');
     sessionStorage.setItem('intimapic_setup_mode', 'connect');
     this.router.navigate(['/setup/provider']);
   }

@@ -7,6 +7,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { VaultService } from '../../core/vault/vault.service';
+import { VaultRegistryService } from '../../core/vault/vault-registry.service';
 import { BiometricAuthService } from '../../core/biometric/biometric-auth.service';
 import { ImportScanService } from '../../core/album/import-scan.service';
 import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
@@ -27,6 +28,9 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
       <div class="unlock-hero">
         <img src="assets/app-logo.png" alt="IntimaPic Logo" class="hero-logo">
         <h2>Tresor entsperren</h2>
+        @if (registry.activeVault(); as vault) {
+          <p class="vault-name">{{ vault.name }}</p>
+        }
         <p class="description">
           @if (biometricAvailable()) {
             Verwende Biometrie oder gib dein Passwort ein.
@@ -93,6 +97,18 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
       <button mat-button class="reset-link" (click)="resetVault()">
         Tresor zurücksetzen
       </button>
+
+      <button mat-button class="add-vault-link" (click)="addVault()">
+        <mat-icon>add</mat-icon>
+        Neuen Tresor hinzufügen
+      </button>
+
+      @if (registry.hasMultipleVaults()) {
+        <button mat-button class="switch-link" (click)="switchVault()">
+          <mat-icon>swap_horiz</mat-icon>
+          Anderen Tresor wählen
+        </button>
+      }
     </div>
   `,
   styles: [`
@@ -102,29 +118,34 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
       align-items: center;
       justify-content: center;
       min-height: 100vh;
-      padding: 2rem;
+      min-height: 100dvh;
+      padding: 1rem 2rem;
+      box-sizing: border-box;
+      overflow-y: auto;
     }
 
     .unlock-hero {
       text-align: center;
-      margin-bottom: 2rem;
+      margin-bottom: 1.5rem;
     }
 
     .hero-logo {
-      width: 120px;
-      height: 120px;
-      margin-bottom: 1rem;
-      border-radius: 20px;
+      width: 80px;
+      height: 80px;
+      margin-bottom: 0.75rem;
+      border-radius: 16px;
     }
 
     h2 {
       font-weight: 400;
-      margin: 0 0 0.5rem 0;
+      margin: 0 0 0.25rem 0;
+      font-size: 1.4rem;
     }
 
     .description {
       opacity: 0.7;
       margin: 0;
+      font-size: 0.9rem;
     }
 
     .biometric-section {
@@ -133,12 +154,12 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
       display: flex;
       flex-direction: column;
       align-items: center;
-      margin-bottom: 0.5rem;
+      margin-bottom: 0.25rem;
     }
 
     .biometric-btn {
       width: 100%;
-      height: 48px;
+      height: 44px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -149,7 +170,7 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
       display: flex;
       align-items: center;
       width: 100%;
-      margin: 1.25rem 0;
+      margin: 0.75rem 0;
       gap: 1rem;
     }
 
@@ -173,7 +194,7 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
       max-width: 320px;
       display: flex;
       flex-direction: column;
-      gap: 0.5rem;
+      gap: 0.25rem;
     }
 
     .full-width {
@@ -181,8 +202,8 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
     }
 
     .unlock-btn {
-      height: 48px;
-      margin-top: 0.5rem;
+      height: 44px;
+      margin-top: 0.25rem;
     }
 
     .error {
@@ -193,14 +214,32 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
     }
 
     .reset-link {
-      margin-top: 2rem;
+      margin-top: 1.5rem;
       opacity: 0.6;
+    }
+
+    .add-vault-link {
+      margin-top: 0.25rem;
+      opacity: 0.7;
+    }
+
+    .switch-link {
+      margin-top: 0.25rem;
+      opacity: 0.7;
+    }
+
+    .vault-name {
+      font-size: 0.9rem;
+      opacity: 0.8;
+      margin: 0.25rem 0 0.5rem 0;
+      font-weight: 500;
     }
   `]
 })
 export class UnlockVaultComponent implements OnInit {
   private readonly router = inject(Router);
   private readonly vaultService = inject(VaultService);
+  protected readonly registry = inject(VaultRegistryService);
   private readonly biometricAuth = inject(BiometricAuthService);
   private readonly importScanService = inject(ImportScanService);
   private readonly thumbnailSync = inject(ThumbnailSyncService);
@@ -253,8 +292,21 @@ export class UnlockVaultComponent implements OnInit {
   async resetVault(): Promise<void> {
     if (confirm('Tresor wirklich zurücksetzen? Deine lokalen Einstellungen werden gelöscht. Die verschlüsselten Daten bleiben in der Cloud erhalten.')) {
       await this.vaultService.reset();
-      this.router.navigate(['/setup/welcome']);
+      if (this.registry.hasVaults()) {
+        this.router.navigate(['/setup/vault-select']);
+      } else {
+        this.router.navigate(['/setup/welcome']);
+      }
     }
+  }
+
+  switchVault(): void {
+    this.router.navigate(['/setup/vault-select']);
+  }
+
+  addVault(): void {
+    sessionStorage.setItem('intimapic_adding_new_vault', 'true');
+    this.router.navigate(['/setup/welcome']);
   }
 
   private async postUnlock(): Promise<void> {

@@ -24,7 +24,7 @@ import type { StorageProviderType, StorageSettings } from '../../core/crypto/cry
     <div class="create-container">
       <h2>Tresor erstellen</h2>
       <p class="description">
-        Wähle ein sicheres Passwort zum Schutz deines Verschlüsselungsschlüssels.
+        Gib deinem Tresor einen Namen und wähle ein sicheres Passwort.
       </p>
 
       @if (vaultAlreadyExists()) {
@@ -52,6 +52,16 @@ import type { StorageProviderType, StorageSettings } from '../../core/crypto/cry
         </div>
       } @else {
         <form (ngSubmit)="createVault()" class="form">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Tresorname</mat-label>
+            <input matInput
+                   [(ngModel)]="vaultName"
+                   name="vaultName"
+                   required
+                   placeholder="z. B. Privat, Arbeit ...">
+            <mat-icon matPrefix>shield</mat-icon>
+          </mat-form-field>
+
           <mat-form-field appearance="outline" class="full-width">
             <mat-label>Passwort</mat-label>
             <input matInput
@@ -211,6 +221,7 @@ export class CreateVaultComponent {
 
   password = '';
   confirmPassword = '';
+  vaultName = '';
   hidePassword = signal(true);
   loading = signal(false);
   checking = signal(true);
@@ -218,12 +229,14 @@ export class CreateVaultComponent {
   vaultAlreadyExists = signal(false);
 
   constructor() {
+    // Suggest vault name from root path folder name
+    this.vaultName = this.deriveVaultName();
     // Check if a vault already exists at the target storage location
     this.checkExistingVault();
   }
 
   isValid(): boolean {
-    return this.password.length >= 8 && this.password === this.confirmPassword;
+    return this.vaultName.trim().length > 0 && this.password.length >= 8 && this.password === this.confirmPassword;
   }
 
   async createVault(): Promise<void> {
@@ -254,7 +267,7 @@ export class CreateVaultComponent {
       return;
     }
 
-    const success = await this.vaultService.createVault(this.password, settings);
+    const success = await this.vaultService.createVault(this.password, settings, this.vaultName.trim());
 
     this.loading.set(false);
 
@@ -296,6 +309,12 @@ export class CreateVaultComponent {
     } finally {
       this.checking.set(false);
     }
+  }
+
+  private deriveVaultName(): string {
+    const rootPath = sessionStorage.getItem('intimapic_provider_root_path') || '';
+    const segments = rootPath.split('/').filter(s => s.length > 0);
+    return segments.length > 0 ? segments[segments.length - 1] : '';
   }
 
   private buildSettings(provider: StorageProviderType): StorageSettings {

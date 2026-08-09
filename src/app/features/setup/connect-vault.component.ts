@@ -29,6 +29,15 @@ import type { StorageProviderType, StorageSettings } from '../../core/crypto/cry
         ob ein Tresor vorhanden ist.
       </p>
 
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Tresorname</mat-label>
+        <input matInput
+               [(ngModel)]="vaultName"
+               name="vaultName"
+               placeholder="z. B. Privat, Arbeit ...">
+        <mat-icon matPrefix>shield</mat-icon>
+      </mat-form-field>
+
       @if (error()) {
         <div class="error-box">
           <mat-icon>error_outline</mat-icon>
@@ -145,6 +154,11 @@ import type { StorageProviderType, StorageSettings } from '../../core/crypto/cry
       width: 100%;
       margin-top: 1rem;
     }
+
+    .full-width {
+      width: 100%;
+      margin-bottom: 1rem;
+    }
   `]
 })
 export class ConnectVaultComponent {
@@ -154,6 +168,12 @@ export class ConnectVaultComponent {
   loading = signal(false);
   error = signal<string | null>(null);
   success = signal(false);
+  vaultName = '';
+
+  constructor() {
+    // Suggest vault name from root path folder name
+    this.vaultName = this.deriveVaultName();
+  }
 
   async connectVault(): Promise<void> {
     this.loading.set(true);
@@ -168,7 +188,7 @@ export class ConnectVaultComponent {
     }
 
     const settings = this.buildSettings(provider);
-    const result = await this.vaultService.connectExistingVault(settings);
+    const result = await this.vaultService.connectExistingVault(settings, this.vaultName.trim() || undefined);
 
     this.loading.set(false);
 
@@ -192,6 +212,12 @@ export class ConnectVaultComponent {
 
   goBack(): void {
     this.router.navigate(['/setup/provider-config']);
+  }
+
+  private deriveVaultName(): string {
+    const rootPath = sessionStorage.getItem('intimapic_provider_root_path') || '';
+    const segments = rootPath.split('/').filter(s => s.length > 0);
+    return segments.length > 0 ? segments[segments.length - 1] : '';
   }
 
   private buildSettings(provider: StorageProviderType): StorageSettings {

@@ -7,6 +7,10 @@ export const SETUP_ROUTES: Routes = [
     pathMatch: 'full',
   },
   {
+    path: 'vault-select',
+    loadComponent: () => import('./vault-select.component').then(m => m.VaultSelectComponent),
+  },
+  {
     path: 'welcome',
     loadComponent: () => import('./welcome.component').then(m => m.WelcomeComponent),
   },

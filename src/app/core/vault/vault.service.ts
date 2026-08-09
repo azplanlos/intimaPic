@@ -4,6 +4,7 @@ import { VaultConfigService } from '../crypto/vault-config.service';
 import { BiometricAuthService } from '../biometric/biometric-auth.service';
 import { BiometricCredentialStore } from '../biometric/biometric-credential.store';
 import { StorageAdapterFactory } from '../storage/storage-adapter.factory';
+import { VaultRegistryService } from './vault-registry.service';
 import type { StorageAdapter } from '../storage/storage-adapter.interface';
 import type { StorageSettings } from '../crypto/crypto.models';
 
@@ -13,6 +14,9 @@ export type VaultStatus = 'none' | 'locked' | 'unlocked';
  * Central state service managing vault lifecycle.
  * Tracks whether a vault exists, is locked/unlocked,
  * and which storage adapter is active.
+ *
+ * Works with VaultRegistryService to support multiple vaults.
+ * Only one vault can be unlocked at a time.
  */
 @Injectable({ providedIn: 'root' })
 export class VaultService {
@@ -21,42 +25,45 @@ export class VaultService {
   private readonly biometricAuth = inject(BiometricAuthService);
   private readonly biometricStore = inject(BiometricCredentialStore);
   private readonly storageFactory = inject(StorageAdapterFactory);
+  private readonly registry = inject(VaultRegistryService);
   private readonly injector = inject(Injector);
 
   // ─── State (Signals) ──────────────────────────────────────────────
 
   private readonly _status = signal<VaultStatus>('none');
-  private readonly _storageSettings = signal<StorageSettings | null>(null);
   private readonly _error = signal<string | null>(null);
 
   readonly status = this._status.asReadonly();
-  readonly storageSettings = this._storageSettings.asReadonly();
   readonly error = this._error.asReadonly();
   readonly isUnlocked = computed(() => this._status() === 'unlocked');
 
-  private activeAdapter: StorageAdapter | null = null;
+  /** Storage settings of the currently active vault (convenience accessor) */
+  readonly storageSettings = computed(() => {
+    const vault = this.registry.activeVault();
+    return vault?.storageSettings ?? null;
+  });
 
-  private readonly SETTINGS_KEY = 'intimapic_storage_settings';
-  private readonly VAULT_EXISTS_KEY = 'intimapic_vault_exists';
+  private activeAdapter: StorageAdapter | null = null;
 
   // ─── Initialization ───────────────────────────────────────────────
 
   /**
-   * Check if a vault has been previously created on this device.
+   * Initialize the vault system. Loads the registry and migrates
+   * from the legacy single-vault format if needed.
    */
   async initialize(): Promise<void> {
-    const vaultExists = localStorage.getItem(this.VAULT_EXISTS_KEY) === 'true';
-    const settingsJson = localStorage.getItem(this.SETTINGS_KEY);
+    this.registry.initialize();
 
-    if (settingsJson) {
-      try {
-        this._storageSettings.set(JSON.parse(settingsJson));
-      } catch {
-        localStorage.removeItem(this.SETTINGS_KEY);
+    // Migrate legacy single-vault localStorage keys to registry
+    if (!this.registry.hasVaults()) {
+      const legacyExists = localStorage.getItem('intimapic_vault_exists') === 'true';
+      if (legacyExists) {
+        this.registry.migrateFromLegacy();
       }
     }
 
-    if (vaultExists) {
+    // Determine status based on registry
+    if (this.registry.hasVaults()) {
       this._status.set('locked');
     } else {
       this._status.set('none');
@@ -67,8 +74,9 @@ export class VaultService {
 
   /**
    * Create a new Cryptomator-compatible vault with the given password and storage settings.
+   * Registers the vault in the registry.
    */
-  async createVault(password: string, settings: StorageSettings): Promise<boolean> {
+  async createVault(password: string, settings: StorageSettings, vaultName?: string): Promise<boolean> {
     try {
       this._error.set(null);
 
@@ -99,11 +107,8 @@ export class VaultService {
       );
 
       // 6. Create Cryptomator directory structure
-      // Each step gets its own try/catch to prevent one failure from blocking the next.
-      // Cryptomator Desktop requires d/XX/YYYYYY to exist (ContentRootMissingException otherwise).
       const rootDirPath = await this.cryptoService.encryptDirectoryId('');
       const rootDirParts = rootDirPath.split('/');
-      // rootDirParts = ['d', 'B4', 'GOWMCDRFYMO3NPH4TGX6C4GELMUYFB'] (example)
 
       try { await this.activeAdapter.createFolder('d'); }
       catch { /* may already exist */ }
@@ -111,15 +116,13 @@ export class VaultService {
       try { await this.activeAdapter.createFolder(`d/${rootDirParts[1]}`); }
       catch { /* may already exist */ }
 
-      // This is the critical folder – Cryptomator Desktop checks for its existence on unlock.
       await this.activeAdapter.createFolder(rootDirPath);
 
-      // 8. Persist settings locally
-      this._storageSettings.set(settings);
-      localStorage.setItem(this.SETTINGS_KEY, JSON.stringify(settings));
-      localStorage.setItem(this.VAULT_EXISTS_KEY, 'true');
-      this._status.set('unlocked');
+      // 7. Register vault in the registry
+      const name = vaultName || 'Mein Tresor';
+      this.registry.addVault(name, settings);
 
+      this._status.set('unlocked');
       return true;
     } catch (err) {
       this._error.set(err instanceof Error ? err.message : 'Vault creation failed');
@@ -131,10 +134,10 @@ export class VaultService {
 
   /**
    * Connect to an existing vault on a new device.
-   * Validates that masterkey.cryptomator exists, saves settings locally,
+   * Validates that masterkey.cryptomator exists, registers it,
    * and sets status to 'locked' so the unlock screen appears.
    */
-  async connectExistingVault(settings: StorageSettings): Promise<boolean> {
+  async connectExistingVault(settings: StorageSettings, vaultName?: string): Promise<boolean> {
     try {
       this._error.set(null);
 
@@ -157,12 +160,11 @@ export class VaultService {
       // 3. Disconnect (will reconnect on unlock)
       await adapter.disconnect();
 
-      // 4. Persist settings locally
-      this._storageSettings.set(settings);
-      localStorage.setItem(this.SETTINGS_KEY, JSON.stringify(settings));
-      localStorage.setItem(this.VAULT_EXISTS_KEY, 'true');
-      this._status.set('locked');
+      // 4. Register vault in the registry
+      const name = vaultName || 'Mein Tresor';
+      this.registry.addVault(name, settings);
 
+      this._status.set('locked');
       return true;
     } catch (err) {
       this._error.set(
@@ -194,17 +196,19 @@ export class VaultService {
   // ─── Vault Unlock ─────────────────────────────────────────────────
 
   /**
-   * Unlock an existing vault by connecting to storage and unwrapping master keys.
+   * Unlock the active vault by connecting to storage and unwrapping master keys.
    */
   async unlockVault(password: string): Promise<boolean> {
     try {
       this._error.set(null);
-      const settings = this._storageSettings();
+      const vault = this.registry.activeVault();
 
-      if (!settings) {
-        this._error.set('No storage settings found. Please set up a new vault.');
+      if (!vault) {
+        this._error.set('Kein Tresor ausgewählt. Bitte wähle einen Tresor.');
         return false;
       }
+
+      const settings = vault.storageSettings;
 
       // 1. Connect to storage
       this.activeAdapter = await this.storageFactory.connectAdapter(settings);
@@ -241,12 +245,14 @@ export class VaultService {
   async unlockWithBiometric(): Promise<boolean> {
     try {
       this._error.set(null);
-      const settings = this._storageSettings();
+      const vault = this.registry.activeVault();
 
-      if (!settings) {
-        this._error.set('No storage settings found. Please set up a new vault.');
+      if (!vault) {
+        this._error.set('Kein Tresor ausgewählt. Bitte wähle einen Tresor.');
         return false;
       }
+
+      const settings = vault.storageSettings;
 
       // 1. Authenticate biometrically (loads master keys via PRF)
       const authSuccess = await this.biometricAuth.authenticate();
@@ -267,7 +273,7 @@ export class VaultService {
   }
 
   /**
-   * Check if biometric unlock is available for this vault.
+   * Check if biometric unlock is available for the active vault.
    */
   async isBiometricAvailable(): Promise<boolean> {
     const [platformAvailable, hasCredentials] = await Promise.all([
@@ -293,6 +299,19 @@ export class VaultService {
     this._status.set('locked');
   }
 
+  // ─── Vault Switch ─────────────────────────────────────────────────
+
+  /**
+   * Switch to a different vault. Locks the current vault first.
+   */
+  async switchVault(vaultId: string): Promise<void> {
+    if (this._status() === 'unlocked') {
+      await this.lockVault();
+    }
+    this.registry.setActiveVault(vaultId);
+    this._status.set('locked');
+  }
+
   // ─── Storage Access ───────────────────────────────────────────────
 
   getStorage(): StorageAdapter {
@@ -305,16 +324,46 @@ export class VaultService {
   // ─── Settings ─────────────────────────────────────────────────────
 
   updateSettings(settings: StorageSettings): void {
-    this._storageSettings.set(settings);
-    localStorage.setItem(this.SETTINGS_KEY, JSON.stringify(settings));
+    const vault = this.registry.activeVault();
+    if (vault) {
+      // Update settings in the registry
+      const updatedVault = { ...vault, storageSettings: settings };
+      const vaults = this.registry.vaults().map(v =>
+        v.id === vault.id ? updatedVault : v
+      );
+      // Persist via registry (re-persist the whole list)
+      localStorage.setItem('intimapic_vault_registry', JSON.stringify(vaults));
+    }
   }
 
+  // ─── Reset ────────────────────────────────────────────────────────
+
+  /**
+   * Remove the active vault from the registry and reset state.
+   */
   async reset(): Promise<void> {
     await this.lockVault();
     await this.biometricStore.clear();
-    localStorage.removeItem(this.SETTINGS_KEY);
-    localStorage.removeItem(this.VAULT_EXISTS_KEY);
-    this._storageSettings.set(null);
+
+    const activeId = this.registry.activeVaultId();
+    if (activeId) {
+      this.registry.removeVault(activeId);
+    }
+
+    if (this.registry.hasVaults()) {
+      this._status.set('locked');
+    } else {
+      this._status.set('none');
+    }
+  }
+
+  /**
+   * Full reset: remove all vaults.
+   */
+  async resetAll(): Promise<void> {
+    await this.lockVault();
+    await this.biometricStore.clear();
+    this.registry.clearAll();
     this._status.set('none');
   }
 }

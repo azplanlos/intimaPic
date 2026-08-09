@@ -5,8 +5,15 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatIconModule } from '@angular/material/icon';
+import { MatDialog } from '@angular/material/dialog';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import type { StorageProviderType } from '../../core/crypto/crypto.models';
 import { environment } from '../../../environments/environment';
+import { OneDriveFolderPickerService } from '../../core/storage/onedrive-folder-picker.service';
+import {
+  OneDriveFolderPickerDialogComponent,
+  FolderPickerDialogResult,
+} from './onedrive-folder-picker-dialog.component';
 
 @Component({
   selector: 'app-provider-config',
@@ -17,6 +24,7 @@ import { environment } from '../../../environments/environment';
     MatFormFieldModule,
     MatInputModule,
     MatIconModule,
+    MatProgressSpinnerModule,
   ],
   template: `
     <div class="config-container">
@@ -26,7 +34,7 @@ import { environment } from '../../../environments/environment';
         @case ('onedrive') {
           @if (hasAzureDefaults) {
             <p class="description">
-              Die Azure-Konfiguration ist vorkonfiguriert. Du kannst die Werte bei Bedarf überschreiben.
+              Die Verbindung zu OneDrive ist vorkonfiguriert. Wähle den Speicherort für deinen Tresor.
             </p>
           } @else {
             <p class="description">
@@ -37,36 +45,47 @@ import { environment } from '../../../environments/environment';
           }
 
           <form class="form" (ngSubmit)="proceed()">
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Application (Client) ID</mat-label>
-              <input matInput
-                     [(ngModel)]="oneDriveClientId"
-                     name="clientId"
-                     required
-                     placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
-              @if (hasAzureDefaults) {
-                <mat-hint>Vorkonfiguriert – bei Bedarf überschreiben</mat-hint>
-              } @else {
+            @if (!hasAzureDefaults) {
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Application (Client) ID</mat-label>
+                <input matInput
+                       [(ngModel)]="oneDriveClientId"
+                       name="clientId"
+                       required
+                       placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
                 <mat-hint>UUID aus der Azure App-Registrierung</mat-hint>
-              }
-            </mat-form-field>
+              </mat-form-field>
 
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Tenant ID (optional)</mat-label>
-              <input matInput
-                     [(ngModel)]="oneDriveTenantId"
-                     name="tenantId"
-                     placeholder="common">
-              <mat-hint>"common" für persönliche Konten, oder Tenant-UUID</mat-hint>
-            </mat-form-field>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Tenant ID (optional)</mat-label>
+                <input matInput
+                       [(ngModel)]="oneDriveTenantId"
+                       name="tenantId"
+                       placeholder="common">
+                <mat-hint>"common" für persönliche Konten, oder Tenant-UUID</mat-hint>
+              </mat-form-field>
+            }
 
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Root-Pfad in OneDrive</mat-label>
-              <input matInput
-                     [(ngModel)]="rootPath"
-                     name="rootPath"
-                     placeholder="/Apps/IntimaPic">
-            </mat-form-field>
+            <div class="path-row">
+              <mat-form-field appearance="outline" class="path-input">
+                <mat-label>Root-Pfad in OneDrive</mat-label>
+                <input matInput
+                       [(ngModel)]="rootPath"
+                       name="rootPath"
+                       placeholder="/Apps/IntimaPic">
+              </mat-form-field>
+              <button mat-icon-button type="button"
+                      class="browse-button"
+                      (click)="openFolderPicker()"
+                      [disabled]="!oneDriveClientId || browsingFolders()"
+                      matTooltip="Ordner in OneDrive durchsuchen">
+                @if (browsingFolders()) {
+                  <mat-spinner diameter="20"></mat-spinner>
+                } @else {
+                  <mat-icon>folder_open</mat-icon>
+                }
+              </button>
+            </div>
 
             <div class="actions">
               <button mat-button type="button" (click)="goBack()">Zurück</button>
@@ -198,6 +217,21 @@ import { environment } from '../../../environments/environment';
       width: 100%;
     }
 
+    .path-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      width: 100%;
+    }
+
+    .path-input {
+      flex: 1;
+    }
+
+    .browse-button {
+      margin-bottom: 1.25rem;
+    }
+
     .actions {
       display: flex;
       gap: 1rem;
@@ -241,8 +275,11 @@ import { environment } from '../../../environments/environment';
 })
 export class ProviderConfigComponent implements OnInit {
   private readonly router = inject(Router);
+  private readonly dialog = inject(MatDialog);
+  private readonly folderPicker = inject(OneDriveFolderPickerService);
 
   provider = signal<StorageProviderType>('onedrive');
+  browsingFolders = signal(false);
 
   // Whether environment provides Azure defaults
   readonly hasAzureDefaults = !!environment.azure.defaultClientId;
@@ -278,6 +315,32 @@ export class ProviderConfigComponent implements OnInit {
       case 'onedrive': return 'OneDrive';
       case 's3': return 'AWS S3';
       case 'icloud': return 'iCloud Drive';
+    }
+  }
+
+  async openFolderPicker(): Promise<void> {
+    if (!this.oneDriveClientId) return;
+
+    this.browsingFolders.set(true);
+    try {
+      // Authenticate first
+      await this.folderPicker.authenticate(this.oneDriveClientId, this.oneDriveTenantId);
+
+      // Open folder picker dialog
+      const dialogRef = this.dialog.open(OneDriveFolderPickerDialogComponent, {
+        width: '500px',
+        maxHeight: '80vh',
+      });
+
+      const result: FolderPickerDialogResult | undefined = await dialogRef.afterClosed().toPromise();
+      if (result) {
+        this.rootPath = result.path;
+      }
+    } catch (err) {
+      // Authentication failed or was cancelled – user can still type manually
+      console.warn('OneDrive folder picker failed:', err);
+    } finally {
+      this.browsingFolders.set(false);
     }
   }
 
