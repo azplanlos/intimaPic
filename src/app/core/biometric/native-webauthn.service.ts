@@ -1,26 +1,47 @@
 import { Injectable } from '@angular/core';
 
 /**
- * Provides access to the native WebAuthn API by creating a temporary
- * same-origin iframe. This bypasses password manager extensions (like 1Password)
- * that monkey-patch navigator.credentials on the main window.
+ * Provides access to the native WebAuthn API, bypassing password manager
+ * extensions (like 1Password) that monkey-patch navigator.credentials.
  *
- * Password managers inject content scripts into the top-level document and
- * replace navigator.credentials.create/get with their own wrappers.
- * A dynamically created same-origin iframe gets a fresh browsing context
- * with the original, unpatched WebAuthn API.
- *
- * Requirements:
- * - The app must be served over HTTPS (required for WebAuthn anyway)
- * - Same-origin iframes can use WebAuthn without additional permissions
+ * Strategy:
+ * - On desktop browsers (where 1Password injects content scripts):
+ *   Uses a hidden same-origin iframe with a fresh, unpatched WebAuthn API.
+ * - On mobile/Safari (where iframes can't use WebAuthn, and password managers
+ *   use the native Credential Provider API instead of monkey-patching):
+ *   Calls the top-level navigator.credentials directly.
  */
 @Injectable({ providedIn: 'root' })
 export class NativeWebAuthnService {
 
   /**
+   * Detect if we should use the iframe bypass.
+   * Only needed on desktop browsers where extension monkey-patching is an issue.
+   * Safari (including macOS Safari) doesn't allow WebAuthn in iframes well,
+   * and on iOS the 1Password app uses the native Credential Provider API
+   * rather than injecting scripts.
+   */
+  private get useIframeBypass(): boolean {
+    const ua = navigator.userAgent;
+    // Don't use iframe on Safari (iOS or macOS) – it blocks WebAuthn in iframes
+    if (/Safari/i.test(ua) && !/Chrome/i.test(ua)) return false;
+    // Don't use iframe on mobile browsers
+    if (/iPhone|iPad|iPod|Android/i.test(ua)) return false;
+    // Don't use iframe if running as standalone PWA (no extensions present)
+    if (window.matchMedia('(display-mode: standalone)').matches) return false;
+    // Desktop Chrome/Edge/Firefox – use iframe to bypass 1Password
+    return true;
+  }
+
+  /**
    * Call navigator.credentials.create() using the native (unpatched) API.
    */
   async create(options: CredentialCreationOptions): Promise<PublicKeyCredential | null> {
+    if (!this.useIframeBypass) {
+      const credential = await navigator.credentials.create(options);
+      return credential as PublicKeyCredential | null;
+    }
+
     const iframe = this.createHiddenIframe();
     try {
       const iframeCredentials = iframe.contentWindow!.navigator.credentials;
@@ -35,6 +56,11 @@ export class NativeWebAuthnService {
    * Call navigator.credentials.get() using the native (unpatched) API.
    */
   async get(options: CredentialRequestOptions): Promise<PublicKeyCredential | null> {
+    if (!this.useIframeBypass) {
+      const credential = await navigator.credentials.get(options);
+      return credential as PublicKeyCredential | null;
+    }
+
     const iframe = this.createHiddenIframe();
     try {
       const iframeCredentials = iframe.contentWindow!.navigator.credentials;
@@ -46,10 +72,18 @@ export class NativeWebAuthnService {
   }
 
   /**
-   * Check if the native platform authenticator is available (bypassing 1Password's
-   * patched version of PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable).
+   * Check if the native platform authenticator is available.
    */
   async isPlatformAuthenticatorAvailable(): Promise<boolean> {
+    if (!this.useIframeBypass) {
+      if (!window.PublicKeyCredential) return false;
+      try {
+        return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+      } catch {
+        return false;
+      }
+    }
+
     const iframe = this.createHiddenIframe();
     try {
       const iframeWindow = iframe.contentWindow as Window & typeof globalThis;
@@ -65,15 +99,12 @@ export class NativeWebAuthnService {
 
   private createHiddenIframe(): HTMLIFrameElement {
     const iframe = document.createElement('iframe');
-    // Same-origin about:blank iframe inherits the parent origin
-    // and has access to WebAuthn without needing allow= attributes.
     iframe.style.display = 'none';
     iframe.style.width = '0';
     iframe.style.height = '0';
     iframe.style.border = 'none';
     iframe.style.position = 'absolute';
     iframe.style.top = '-9999px';
-    // Ensure the iframe is same-origin (about:blank inherits parent origin)
     iframe.src = 'about:blank';
     document.body.appendChild(iframe);
     return iframe;
