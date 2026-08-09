@@ -49,10 +49,10 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
             @if (loading() && biometricLoading()) {
               <mat-spinner diameter="20"></mat-spinner>
             } @else {
-              <ng-container>
+              <span class="biometric-btn-content">
                 <mat-icon>fingerprint</mat-icon>
                 Mit Biometrie entsperren
-              </ng-container>
+              </span>
             }
           </button>
 
@@ -160,9 +160,11 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
     .biometric-btn {
       width: 100%;
       height: 44px;
-      display: flex;
+    }
+
+    .biometric-btn-content {
+      display: inline-flex;
       align-items: center;
-      justify-content: center;
       gap: 0.5rem;
     }
 
