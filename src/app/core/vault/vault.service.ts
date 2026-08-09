@@ -5,6 +5,7 @@ import { BiometricAuthService } from '../biometric/biometric-auth.service';
 import { BiometricCredentialStore } from '../biometric/biometric-credential.store';
 import { StorageAdapterFactory } from '../storage/storage-adapter.factory';
 import { VaultRegistryService } from './vault-registry.service';
+import { VaultSettingsService } from './vault-settings.service';
 import type { StorageAdapter } from '../storage/storage-adapter.interface';
 import type { StorageSettings } from '../crypto/crypto.models';
 
@@ -26,6 +27,7 @@ export class VaultService {
   private readonly biometricStore = inject(BiometricCredentialStore);
   private readonly storageFactory = inject(StorageAdapterFactory);
   private readonly registry = inject(VaultRegistryService);
+  private readonly vaultSettings = inject(VaultSettingsService);
   private readonly injector = inject(Injector);
 
   // ─── State (Signals) ──────────────────────────────────────────────
@@ -118,8 +120,11 @@ export class VaultService {
 
       await this.activeAdapter.createFolder(rootDirPath);
 
-      // 7. Register vault in the registry
+      // 7. Write vault settings file with the chosen name
       const name = vaultName || 'Mein Tresor';
+      await this.vaultSettings.ensureSettings(this.activeAdapter, name);
+
+      // 8. Register vault in the registry
       this.registry.addVault(name, settings);
 
       this._status.set('unlocked');
@@ -228,6 +233,9 @@ export class VaultService {
         return false;
       }
 
+      // 4. Ensure vault settings file exists and sync name
+      await this.syncVaultSettings(vault.id, vault.name);
+
       this._status.set('unlocked');
       return true;
     } catch (err) {
@@ -264,6 +272,9 @@ export class VaultService {
       // 2. Connect to storage
       this.activeAdapter = await this.storageFactory.connectAdapter(settings);
 
+      // 3. Ensure vault settings file exists and sync name
+      await this.syncVaultSettings(vault.id, vault.name);
+
       this._status.set('unlocked');
       return true;
     } catch (err) {
@@ -281,6 +292,28 @@ export class VaultService {
       this.biometricAuth.hasRegisteredCredentials(),
     ]);
     return platformAvailable && hasCredentials;
+  }
+
+  // ─── Vault Settings Sync ────────────────────────────────────────────
+
+  /**
+   * Ensure settings.json exists in the vault and sync the vault name.
+   * If settings.json has a name, update the local registry to match.
+   * If settings.json is missing, create it with the local registry name.
+   */
+  private async syncVaultSettings(vaultId: string, localName: string): Promise<void> {
+    if (!this.activeAdapter) return;
+
+    try {
+      const settings = await this.vaultSettings.ensureSettings(this.activeAdapter, localName);
+
+      // If the remote settings have a different name, sync it to the local registry
+      if (settings.name && settings.name !== localName) {
+        this.registry.renameVault(vaultId, settings.name);
+      }
+    } catch {
+      // Non-critical — don't block unlock if settings sync fails
+    }
   }
 
   // ─── Vault Lock ───────────────────────────────────────────────────
