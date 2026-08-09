@@ -2,6 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { CryptoService } from '../crypto/crypto.service';
 import { VaultService } from '../vault/vault.service';
 import { BlobLruCache } from './lru-cache';
+import { HeicConverterService } from '../upload/heic-converter.service';
 import type { ThumbnailSize } from '../upload/thumbnail.service';
 
 export interface PhotoItem {
@@ -38,6 +39,7 @@ const THUMBS_DIR = '_intimapic/thumbs';
 export class PhotoService {
   private readonly crypto = inject(CryptoService);
   private readonly vaultService = inject(VaultService);
+  private readonly heicConverter = inject(HeicConverterService);
 
   /** LRU cache for thumbnails (max 80 items ~ 80 * 50KB = ~4MB) */
   private readonly thumbnailCache = new BlobLruCache(80);
@@ -139,7 +141,11 @@ export class PhotoService {
     const decryptedData = await this.crypto.decryptFile(encryptedData);
 
     const mimeType = this.getMimeType(photo.name);
-    const blob = new Blob([decryptedData], { type: mimeType });
+    let blob = new Blob([decryptedData], { type: mimeType });
+
+    // Convert HEIC to JPEG for browsers without native HEIC support
+    blob = await this.heicConverter.ensureDisplayable(blob, photo.name);
+
     const url = URL.createObjectURL(blob);
 
     this.fullResCache.set(cacheKey, url);

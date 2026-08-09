@@ -5,14 +5,16 @@ import type { StorageAdapter } from '../storage/storage-adapter.interface';
 import type { FileEntry } from '../crypto/crypto.models';
 
 export interface UnsortedPhoto {
-  /** Encrypted filename as stored (e.g. xyz.c9r) */
+  /** Encrypted filename as stored (e.g. xyz.c9r) — empty for unencrypted files */
   encryptedName: string;
-  /** Decrypted original filename */
+  /** Original filename (decrypted for .c9r files, raw for unencrypted) */
   name: string;
   /** Full storage path */
   storagePath: string;
   /** File size in bytes */
   size: number;
+  /** Whether the file is already encrypted in Cryptomator format */
+  isEncrypted: boolean;
 }
 
 /**
@@ -25,6 +27,10 @@ export interface UnsortedPhoto {
  * Photos in the root are "unsorted" — they haven't been assigned to an album.
  * This happens when photos are imported externally via iOS Shortcuts + Cryptomator,
  * which places them directly in the vault root without album assignment.
+ *
+ * Additionally, unencrypted image files may be placed directly in the vault root
+ * folder (e.g. manually copied via a file manager). These are also picked up
+ * and can be encrypted + sorted into an album through the Import Wizard.
  */
 @Injectable({ providedIn: 'root' })
 export class ImportScanService {
@@ -43,6 +49,8 @@ export class ImportScanService {
 
   /**
    * Scan the vault root for unsorted photo files.
+   * Detects both encrypted (.c9r) files in the Cryptomator root directory
+   * AND unencrypted image files placed directly in the vault storage root.
    * Returns true if unsorted photos were found.
    */
   async scanRoot(): Promise<boolean> {
@@ -53,42 +61,59 @@ export class ImportScanService {
       const storage = this.vaultService.getStorage();
       const rootPath = await this.crypto.encryptDirectoryId(this.ROOT_DIR_ID);
 
-      let entries: FileEntry[];
-      try {
-        entries = await storage.listFiles(rootPath);
-      } catch {
-        this._unsortedPhotos.set([]);
-        return false;
-      }
-
       const unsorted: UnsortedPhoto[] = [];
 
-      for (const entry of entries) {
-        // Skip directories (those are album folders)
-        if (entry.isDirectory) continue;
+      // 1. Scan the Cryptomator root directory (d/AB/HASH.../) for encrypted .c9r photos
+      try {
+        const entries = await storage.listFiles(rootPath);
 
-        // Only process .c9r files
-        if (!entry.encryptedName.endsWith('.c9r')) continue;
+        for (const entry of entries) {
+          if (entry.isDirectory) continue;
+          if (!entry.encryptedName.endsWith('.c9r')) continue;
 
-        try {
-          const name = await this.crypto.decryptFilename(
-            entry.encryptedName,
-            this.ROOT_DIR_ID
-          );
+          try {
+            const name = await this.crypto.decryptFilename(
+              entry.encryptedName,
+              this.ROOT_DIR_ID
+            );
 
-          // Only include image files
-          if (this.isImageFile(name)) {
+            if (this.isImageFile(name)) {
+              unsorted.push({
+                encryptedName: entry.encryptedName,
+                name,
+                storagePath: `${rootPath}/${entry.encryptedName}`,
+                size: entry.size,
+                isEncrypted: true,
+              });
+            }
+          } catch {
+            // Can't decrypt — skip
+            continue;
+          }
+        }
+      } catch {
+        // Cryptomator root directory might not exist yet
+      }
+
+      // 2. Scan the vault storage root ('') for unencrypted image files
+      //    These live alongside the d/ folder (e.g. /Apps/IntimaPic/photo.jpg)
+      try {
+        const storageRootEntries = await storage.listFiles('');
+
+        for (const entry of storageRootEntries) {
+          if (entry.isDirectory) continue;
+          if (this.isImageFile(entry.encryptedName)) {
             unsorted.push({
-              encryptedName: entry.encryptedName,
-              name,
-              storagePath: `${rootPath}/${entry.encryptedName}`,
+              encryptedName: '',
+              name: entry.encryptedName,
+              storagePath: entry.encryptedName,
               size: entry.size,
+              isEncrypted: false,
             });
           }
-        } catch {
-          // Can't decrypt — skip
-          continue;
         }
+      } catch {
+        // Storage root listing failed — skip unencrypted scan
       }
 
       this._unsortedPhotos.set(unsorted);
@@ -100,9 +125,22 @@ export class ImportScanService {
 
   /**
    * Move a photo from root to a target album.
-   * This re-encrypts the filename for the target directory and moves the file.
+   * For encrypted photos: re-encrypts the filename and moves the file.
+   * For unencrypted photos: encrypts the file content + filename, uploads, and deletes the original.
    */
   async moveToAlbum(photo: UnsortedPhoto, targetDirectoryId: string): Promise<void> {
+    if (photo.isEncrypted) {
+      await this.moveEncryptedToAlbum(photo, targetDirectoryId);
+    } else {
+      await this.importUnencryptedToAlbum(photo, targetDirectoryId);
+    }
+  }
+
+  /**
+   * Move an already-encrypted photo from root to a target album.
+   * Re-encrypts the filename for the target directory and moves the file.
+   */
+  private async moveEncryptedToAlbum(photo: UnsortedPhoto, targetDirectoryId: string): Promise<void> {
     const storage = this.vaultService.getStorage();
 
     // Read the encrypted file
@@ -133,7 +171,48 @@ export class ImportScanService {
 
     // Remove from unsorted list
     this._unsortedPhotos.update(photos =>
-      photos.filter(p => p.encryptedName !== photo.encryptedName)
+      photos.filter(p => p.storagePath !== photo.storagePath)
+    );
+  }
+
+  /**
+   * Import an unencrypted photo: encrypt file content + filename, upload to target album,
+   * then delete the plaintext original from the vault root.
+   */
+  private async importUnencryptedToAlbum(photo: UnsortedPhoto, targetDirectoryId: string): Promise<void> {
+    const storage = this.vaultService.getStorage();
+
+    // Read the plaintext file
+    const plainData = await storage.readFile(photo.storagePath);
+
+    // Encrypt the file content (Cryptomator format: header + GCM chunks)
+    const encryptedData = await this.crypto.encryptFile(plainData);
+
+    // Deduplicate filename
+    const uniqueName = await this.deduplicateName(photo.name, targetDirectoryId, storage);
+
+    // Encrypt the filename for the target directory
+    const newEncryptedName = await this.crypto.encryptFilename(uniqueName, targetDirectoryId);
+
+    // Compute target directory path
+    const targetDirPath = await this.crypto.encryptDirectoryId(targetDirectoryId);
+
+    // Ensure target directory exists
+    const parts = targetDirPath.split('/');
+    try { await storage.createFolder(parts[0]); } catch { /* d/ exists */ }
+    try { await storage.createFolder(`${parts[0]}/${parts[1]}`); } catch { /* d/XX exists */ }
+    try { await storage.createFolder(targetDirPath); } catch { /* exists */ }
+
+    // Write encrypted file to target location
+    const targetPath = `${targetDirPath}/${newEncryptedName}`;
+    await storage.writeFile(targetPath, encryptedData);
+
+    // Delete the plaintext original from root
+    await storage.deleteFile(photo.storagePath);
+
+    // Remove from unsorted list
+    this._unsortedPhotos.update(photos =>
+      photos.filter(p => p.storagePath !== photo.storagePath)
     );
   }
 

@@ -1,6 +1,7 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { CryptoService } from '../crypto/crypto.service';
 import { ThumbnailService } from './thumbnail.service';
+import { HeicConverterService } from './heic-converter.service';
 import { UploadQueueService } from './upload-queue.service';
 import { VaultService } from '../vault/vault.service';
 import type { StorageAdapter } from '../storage/storage-adapter.interface';
@@ -40,6 +41,7 @@ const THUMBS_DIR = `${INTIMAPIC_META_ROOT}/thumbs`;
 export class UploadService {
   private readonly crypto = inject(CryptoService);
   private readonly thumbnailService = inject(ThumbnailService);
+  private readonly heicConverter = inject(HeicConverterService);
   private readonly uploadQueue = inject(UploadQueueService);
   private readonly vaultService = inject(VaultService);
 
@@ -120,7 +122,10 @@ export class UploadService {
       // Step 1: Generate both thumbnail sizes
       this.updateProgress(id, { step: 'thumbnail', progress: 5 });
       await this.uploadQueue.updateStatus(id, 'encrypting');
-      const thumbs = await this.thumbnailService.generateAll(file);
+
+      // Convert HEIC to JPEG if needed before generating thumbnails
+      const thumbnailSource = await this.heicConverter.ensureDisplayable(file, file.name);
+      const thumbs = await this.thumbnailService.generateAll(thumbnailSource);
 
       // Step 2: Encrypt filename (AES-SIV with directoryId as AAD)
       this.updateProgress(id, { step: 'encrypting', progress: 20 });

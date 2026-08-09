@@ -16,6 +16,7 @@ import { PhotoService } from '../../core/album/photo.service';
 import { CryptoService } from '../../core/crypto/crypto.service';
 import { VaultService } from '../../core/vault/vault.service';
 import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
+import { HeicConverterService } from '../../core/upload/heic-converter.service';
 
 @Component({
   selector: 'app-import-wizard',
@@ -74,6 +75,11 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
         <div class="photo-preview">
           @if (previewUrl()) {
             <img [src]="previewUrl()" [alt]="currentPhoto()!.name" class="preview-image">
+          } @else if (previewError()) {
+            <div class="preview-placeholder preview-error">
+              <mat-icon>broken_image</mat-icon>
+              <p>{{ previewError() }}</p>
+            </div>
           } @else {
             <div class="preview-placeholder">
               <mat-spinner diameter="32"></mat-spinner>
@@ -81,6 +87,11 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
             </div>
           }
           <p class="filename">{{ currentPhoto()!.name }}</p>
+          @if (!currentPhoto()!.isEncrypted) {
+            <span class="unencrypted-badge">
+              <mat-icon>lock_open</mat-icon> Unverschlüsselt
+            </span>
+          }
         </div>
 
         <!-- Album selection -->
@@ -225,11 +236,35 @@ import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
       border-radius: 12px;
     }
 
+    .preview-error mat-icon {
+      font-size: 48px;
+      width: 48px;
+      height: 48px;
+      opacity: 0.5;
+    }
+
     .filename {
       margin-top: 0.5rem;
       font-size: 0.85rem;
       opacity: 0.7;
       word-break: break-all;
+    }
+
+    .unencrypted-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      margin-top: 0.25rem;
+      padding: 0.2rem 0.6rem;
+      font-size: 0.75rem;
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--mat-sys-tertiary) 15%, transparent);
+      color: var(--mat-sys-tertiary);
+    }
+    .unencrypted-badge mat-icon {
+      font-size: 14px;
+      width: 14px;
+      height: 14px;
     }
 
     .album-selection h3 {
@@ -279,23 +314,26 @@ export class ImportWizardComponent implements OnInit {
   private readonly crypto = inject(CryptoService);
   private readonly vaultService = inject(VaultService);
   private readonly thumbnailSync = inject(ThumbnailSyncService);
+  private readonly heicConverter = inject(HeicConverterService);
 
   readonly albums = this.albumService.albums;
   readonly loading = signal(true);
   readonly processing = signal(false);
   readonly currentIndex = signal(0);
   readonly previewUrl = signal<string | null>(null);
+  readonly previewError = signal<string | null>(null);
   readonly selectedAlbum = signal<Album | null>(null);
   readonly showNewAlbumForm = signal(false);
   readonly processedCount = signal(0);
   newAlbumName = '';
 
-  private unsortedPhotos: UnsortedPhoto[] = [];
+  private unsortedPhotos = signal<UnsortedPhoto[]>([]);
 
   readonly totalPhotos = signal(0);
   readonly currentPhoto = computed(() => {
     const idx = this.currentIndex();
-    return idx < this.unsortedPhotos.length ? this.unsortedPhotos[idx] : null;
+    const photos = this.unsortedPhotos();
+    return idx < photos.length ? photos[idx] : null;
   });
   readonly allDone = computed(() =>
     !this.loading() && this.processedCount() > 0 && !this.currentPhoto()
@@ -312,10 +350,10 @@ export class ImportWizardComponent implements OnInit {
       await this.albumService.loadAlbums();
 
       // Get the unsorted photos (already scanned before navigation)
-      this.unsortedPhotos = this.importScanService.unsortedPhotos();
-      this.totalPhotos.set(this.unsortedPhotos.length);
+      this.unsortedPhotos.set(this.importScanService.unsortedPhotos());
+      this.totalPhotos.set(this.unsortedPhotos().length);
 
-      if (this.unsortedPhotos.length > 0) {
+      if (this.unsortedPhotos().length > 0) {
         await this.loadPreview();
       }
     } catch (err) {
@@ -326,24 +364,36 @@ export class ImportWizardComponent implements OnInit {
   }
 
   /**
-   * Load a decrypted preview of the current photo.
+   * Load a preview of the current photo.
+   * For encrypted files: decrypt first. For unencrypted: display directly.
    */
   private async loadPreview(): Promise<void> {
     const photo = this.currentPhoto();
     if (!photo) return;
 
     this.previewUrl.set(null);
+    this.previewError.set(null);
 
     try {
       const storage = this.vaultService.getStorage();
-      const encryptedData = await storage.readFile(photo.storagePath);
-      const decryptedData = await this.crypto.decryptFile(encryptedData);
+      const rawData = await storage.readFile(photo.storagePath);
 
-      const blob = new Blob([decryptedData], { type: this.getMimeType(photo.name) });
-      const url = URL.createObjectURL(blob);
+      let imageData: ArrayBuffer;
+      if (photo.isEncrypted) {
+        imageData = await this.crypto.decryptFile(rawData);
+      } else {
+        // Unencrypted photo — use directly
+        imageData = rawData;
+      }
+
+      const blob = new Blob([imageData], { type: this.getMimeType(photo.name) });
+      // Convert HEIC to JPEG for browsers without native support
+      const displayBlob = await this.heicConverter.ensureDisplayable(blob, photo.name);
+      const url = URL.createObjectURL(displayBlob);
       this.previewUrl.set(url);
     } catch (err) {
       console.warn('[ImportWizard] Failed to load preview:', err);
+      this.previewError.set('Vorschau konnte nicht geladen werden');
     }
   }
 
@@ -406,6 +456,7 @@ export class ImportWizardComponent implements OnInit {
 
     this.selectedAlbum.set(null);
     this.showNewAlbumForm.set(false);
+    this.previewError.set(null);
 
     // Photo stays in array, so advance past it
     this.currentIndex.update(i => i + 1);
@@ -444,11 +495,15 @@ export class ImportWizardComponent implements OnInit {
 
     this.selectedAlbum.set(null);
     this.showNewAlbumForm.set(false);
+    this.previewError.set(null);
 
     // Re-read the (now smaller) array from the service signal.
     // The moved photo was already removed, so index 0 is the next photo.
-    this.unsortedPhotos = this.importScanService.unsortedPhotos();
+    this.unsortedPhotos.set(this.importScanService.unsortedPhotos());
     this.currentIndex.set(0);
+
+    // Update totalPhotos to stay consistent: processed + remaining
+    this.totalPhotos.set(this.processedCount() + this.unsortedPhotos().length);
 
     // Load next preview
     if (this.currentPhoto()) {

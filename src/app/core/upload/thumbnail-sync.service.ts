@@ -1,6 +1,7 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { CryptoService } from '../crypto/crypto.service';
 import { ThumbnailService } from './thumbnail.service';
+import { HeicConverterService } from './heic-converter.service';
 import { VaultService } from '../vault/vault.service';
 import { AlbumService, type Album } from '../album/album.service';
 import type { StorageAdapter } from '../storage/storage-adapter.interface';
@@ -36,6 +37,7 @@ const THUMBS_DIR = `${INTIMAPIC_META_ROOT}/thumbs`;
 export class ThumbnailSyncService {
   private readonly crypto = inject(CryptoService);
   private readonly thumbnailService = inject(ThumbnailService);
+  private readonly heicConverter = inject(HeicConverterService);
   private readonly vaultService = inject(VaultService);
   private readonly albumService = inject(AlbumService);
 
@@ -151,7 +153,8 @@ export class ThumbnailSyncService {
           storage,
           entry,
           dirPath,
-          thumbDir
+          thumbDir,
+          directoryId
         );
       } catch (err) {
         console.warn(`[ThumbnailSync] Failed to generate thumbnail for ${entry.encryptedName}:`, err);
@@ -168,15 +171,23 @@ export class ThumbnailSyncService {
     storage: StorageAdapter,
     entry: FileEntry,
     dirPath: string,
-    thumbDir: string
+    thumbDir: string,
+    directoryId: string
   ): Promise<void> {
     // Read and decrypt the original photo
     const filePath = `${dirPath}/${entry.encryptedName}`;
     const encryptedData = await storage.readFile(filePath);
     const decryptedData = await this.crypto.decryptFile(encryptedData);
 
-    // Create a Blob from the decrypted data for thumbnail generation
-    const blob = new Blob([decryptedData], { type: 'image/jpeg' });
+    // Determine the correct MIME type from the decrypted filename
+    const decryptedName = await this.crypto.decryptFilename(entry.encryptedName, directoryId);
+    const mimeType = this.getMimeType(decryptedName);
+
+    // Create a Blob from the decrypted data
+    let blob: Blob = new Blob([decryptedData], { type: mimeType });
+
+    // Convert HEIC to JPEG if needed (for browsers without native HEIC support)
+    blob = await this.heicConverter.ensureDisplayable(blob, decryptedName);
 
     // Generate both thumbnail sizes
     const thumbs = await this.thumbnailService.generateAll(blob);
@@ -224,5 +235,15 @@ export class ThumbnailSyncService {
   private isImageFile(name: string): boolean {
     const lower = name.toLowerCase();
     return this.IMAGE_EXTENSIONS.some(ext => lower.endsWith(ext));
+  }
+
+  private getMimeType(name: string): string {
+    const lower = name.toLowerCase();
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.gif')) return 'image/gif';
+    if (lower.endsWith('.heic') || lower.endsWith('.heif')) return 'image/heic';
+    if (lower.endsWith('.bmp')) return 'image/bmp';
+    return 'image/jpeg';
   }
 }
