@@ -282,11 +282,18 @@ export class ProviderConfigComponent implements OnInit {
   }
 
   proceed(): void {
-    // Store the configuration in sessionStorage for the create-vault step
+    // Store the configuration in sessionStorage for the next step
     const config = this.buildConfig();
     sessionStorage.setItem('intimapic_provider_config', JSON.stringify(config));
     sessionStorage.setItem('intimapic_provider_root_path', this.rootPath);
-    this.router.navigate(['/setup/create']);
+
+    // Route based on setup mode: 'connect' goes to connect-vault, 'create' goes to create-vault
+    const mode = sessionStorage.getItem('intimapic_setup_mode');
+    if (mode === 'connect') {
+      this.router.navigate(['/setup/connect']);
+    } else {
+      this.router.navigate(['/setup/create']);
+    }
   }
 
   goBack(): void {

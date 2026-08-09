@@ -15,6 +15,10 @@ export const SETUP_ROUTES: Routes = [
     loadComponent: () => import('./create-vault.component').then(m => m.CreateVaultComponent),
   },
   {
+    path: 'connect',
+    loadComponent: () => import('./connect-vault.component').then(m => m.ConnectVaultComponent),
+  },
+  {
     path: 'unlock',
     loadComponent: () => import('./unlock-vault.component').then(m => m.UnlockVaultComponent),
   },

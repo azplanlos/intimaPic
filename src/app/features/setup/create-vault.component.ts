@@ -27,51 +27,83 @@ import type { StorageProviderType, StorageSettings } from '../../core/crypto/cry
         Wähle ein sicheres Passwort zum Schutz deines Verschlüsselungsschlüssels.
       </p>
 
-      <form (ngSubmit)="createVault()" class="form">
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Passwort</mat-label>
-          <input matInput
-                 [type]="hidePassword() ? 'password' : 'text'"
-                 [(ngModel)]="password"
-                 name="password"
-                 required
-                 minlength="8"
-                 autocomplete="new-password">
-          <button mat-icon-button matSuffix type="button"
-                  (click)="hidePassword.set(!hidePassword())">
-            <mat-icon>{{ hidePassword() ? 'visibility_off' : 'visibility' }}</mat-icon>
-          </button>
-          <mat-hint>Mindestens 8 Zeichen</mat-hint>
-        </mat-form-field>
-
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Passwort bestätigen</mat-label>
-          <input matInput
-                 [type]="hidePassword() ? 'password' : 'text'"
-                 [(ngModel)]="confirmPassword"
-                 name="confirmPassword"
-                 required
-                 autocomplete="new-password">
-        </mat-form-field>
-
-        @if (error()) {
-          <p class="error">{{ error() }}</p>
-        }
+      @if (vaultAlreadyExists()) {
+        <div class="warning-box">
+          <mat-icon>warning</mat-icon>
+          <div>
+            <p class="warning-title">Ein Tresor existiert bereits an diesem Speicherort!</p>
+            <p class="warning-text">
+              Das Erstellen eines neuen Tresors würde den bestehenden überschreiben
+              und alle darin enthaltenen Daten unwiderruflich zerstören.
+            </p>
+            <p class="warning-text">
+              Wenn du diesen Tresor auf einem anderen Gerät nutzen möchtest,
+              verwende stattdessen die Option „Bestehenden Tresor verbinden".
+            </p>
+          </div>
+        </div>
 
         <div class="actions">
-          <button mat-button type="button" (click)="goBack()" [disabled]="loading()">
-            Zurück
-          </button>
-          <button mat-raised-button color="primary" type="submit"
-                  [disabled]="loading() || !isValid()">
-            @if (loading()) {
-              <mat-spinner diameter="20"></mat-spinner>
-            } @else {
-              Tresor erstellen
-            }
+          <button mat-button (click)="goBack()">Zurück</button>
+          <button mat-raised-button color="primary" (click)="switchToConnect()">
+            <mat-icon>login</mat-icon>
+            Bestehenden Tresor verbinden
           </button>
         </div>
-      </form>
+      } @else {
+        <form (ngSubmit)="createVault()" class="form">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Passwort</mat-label>
+            <input matInput
+                   [type]="hidePassword() ? 'password' : 'text'"
+                   [(ngModel)]="password"
+                   name="password"
+                   required
+                   minlength="8"
+                   autocomplete="new-password">
+            <button mat-icon-button matSuffix type="button"
+                    (click)="hidePassword.set(!hidePassword())">
+              <mat-icon>{{ hidePassword() ? 'visibility_off' : 'visibility' }}</mat-icon>
+            </button>
+            <mat-hint>Mindestens 8 Zeichen</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Passwort bestätigen</mat-label>
+            <input matInput
+                   [type]="hidePassword() ? 'password' : 'text'"
+                   [(ngModel)]="confirmPassword"
+                   name="confirmPassword"
+                   required
+                   autocomplete="new-password">
+          </mat-form-field>
+
+          @if (error()) {
+            <p class="error">{{ error() }}</p>
+          }
+
+          <div class="actions">
+            <button mat-button type="button" (click)="goBack()" [disabled]="loading()">
+              Zurück
+            </button>
+            <button mat-raised-button color="primary" type="submit"
+                    [disabled]="loading() || !isValid()">
+              @if (loading()) {
+                <mat-spinner diameter="20"></mat-spinner>
+              } @else {
+                Tresor erstellen
+              }
+            </button>
+          </div>
+        </form>
+      }
+
+      @if (checking()) {
+        <div class="checking-overlay">
+          <mat-spinner diameter="32"></mat-spinner>
+          <p>Prüfe Speicherort...</p>
+        </div>
+      }
     </div>
   `,
   styles: [`
@@ -82,6 +114,7 @@ import type { StorageProviderType, StorageSettings } from '../../core/crypto/cry
       padding: 2rem;
       max-width: 400px;
       margin: 0 auto;
+      position: relative;
     }
 
     h2 {
@@ -116,7 +149,59 @@ import type { StorageProviderType, StorageSettings } from '../../core/crypto/cry
       display: flex;
       gap: 1rem;
       justify-content: flex-end;
+      width: 100%;
       margin-top: 1rem;
+    }
+
+    .warning-box {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      padding: 1.25rem;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--mat-sys-error) 8%, transparent);
+      border: 1px solid color-mix(in srgb, var(--mat-sys-error) 30%, transparent);
+      width: 100%;
+      margin-bottom: 1.5rem;
+    }
+
+    .warning-box mat-icon {
+      color: var(--mat-sys-error);
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .warning-title {
+      margin: 0 0 0.5rem 0;
+      font-weight: 500;
+      color: var(--mat-sys-error);
+    }
+
+    .warning-text {
+      margin: 0 0 0.5rem 0;
+      font-size: 0.875rem;
+      opacity: 0.85;
+    }
+
+    .warning-text:last-child {
+      margin-bottom: 0;
+    }
+
+    .checking-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+      background: color-mix(in srgb, var(--mat-sys-surface) 90%, transparent);
+      border-radius: 8px;
+    }
+
+    .checking-overlay p {
+      opacity: 0.7;
+      font-size: 0.9rem;
     }
   `]
 })
@@ -128,7 +213,14 @@ export class CreateVaultComponent {
   confirmPassword = '';
   hidePassword = signal(true);
   loading = signal(false);
+  checking = signal(true);
   error = signal<string | null>(null);
+  vaultAlreadyExists = signal(false);
+
+  constructor() {
+    // Check if a vault already exists at the target storage location
+    this.checkExistingVault();
+  }
 
   isValid(): boolean {
     return this.password.length >= 8 && this.password === this.confirmPassword;
@@ -153,6 +245,15 @@ export class CreateVaultComponent {
     }
 
     const settings = this.buildSettings(provider);
+
+    // Final safety check: verify vault doesn't exist before creating
+    const exists = await this.vaultService.vaultExistsAtStorage(settings);
+    if (exists) {
+      this.vaultAlreadyExists.set(true);
+      this.loading.set(false);
+      return;
+    }
+
     const success = await this.vaultService.createVault(this.password, settings);
 
     this.loading.set(false);
@@ -161,14 +262,40 @@ export class CreateVaultComponent {
       sessionStorage.removeItem('intimapic_selected_provider');
       sessionStorage.removeItem('intimapic_provider_config');
       sessionStorage.removeItem('intimapic_provider_root_path');
+      sessionStorage.removeItem('intimapic_setup_mode');
       this.router.navigate(['/gallery']);
     } else {
       this.error.set(this.vaultService.error() || 'Tresor konnte nicht erstellt werden.');
     }
   }
 
+  switchToConnect(): void {
+    sessionStorage.setItem('intimapic_setup_mode', 'connect');
+    this.router.navigate(['/setup/connect']);
+  }
+
   goBack(): void {
     this.router.navigate(['/setup/provider-config']);
+  }
+
+  private async checkExistingVault(): Promise<void> {
+    const provider = sessionStorage.getItem('intimapic_selected_provider') as StorageProviderType | null;
+    if (!provider) {
+      this.checking.set(false);
+      return;
+    }
+
+    const settings = this.buildSettings(provider);
+
+    try {
+      const exists = await this.vaultService.vaultExistsAtStorage(settings);
+      this.vaultAlreadyExists.set(exists);
+    } catch {
+      // If check fails (e.g. network), allow the user to proceed — createVault will catch it
+      this.vaultAlreadyExists.set(false);
+    } finally {
+      this.checking.set(false);
+    }
   }
 
   private buildSettings(provider: StorageProviderType): StorageSettings {
