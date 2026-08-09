@@ -42,6 +42,10 @@ import type { VaultInfo } from '../../core/vault/vault-registry.models';
                 <mat-icon>more_vert</mat-icon>
               </button>
               <mat-menu #vaultMenu="matMenu">
+                <button mat-menu-item (click)="renameVault(vault)">
+                  <mat-icon>edit</mat-icon>
+                  <span>Umbenennen</span>
+                </button>
                 <button mat-menu-item (click)="removeVault(vault)">
                   <mat-icon>delete</mat-icon>
                   <span>Tresor entfernen</span>
@@ -184,6 +188,13 @@ export class VaultSelectComponent {
       if (!this.registry.hasVaults()) {
         this.router.navigate(['/setup/welcome']);
       }
+    }
+  }
+
+  renameVault(vault: VaultInfo): void {
+    const newName = prompt('Neuer Tresorname:', vault.name);
+    if (newName && newName.trim() && newName.trim() !== vault.name) {
+      this.registry.renameVault(vault.id, newName.trim());
     }
   }
 

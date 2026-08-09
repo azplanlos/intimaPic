@@ -1,11 +1,11 @@
-import { Component, inject, signal, OnInit } from '@angular/core';
+import { Component, inject, signal, OnInit, OnDestroy } from '@angular/core';
 import { Router, ActivatedRoute } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatListModule } from '@angular/material/list';
 import { UploadService, type UploadProgress } from '../../core/upload/upload.service';
+import { ToolbarService } from '../../shared/toolbar.service';
 
 @Component({
   selector: 'app-upload',
@@ -14,17 +14,9 @@ import { UploadService, type UploadProgress } from '../../core/upload/upload.ser
     MatButtonModule,
     MatIconModule,
     MatProgressBarModule,
-    MatToolbarModule,
     MatListModule,
   ],
   template: `
-    <mat-toolbar color="primary">
-      <button mat-icon-button (click)="goBack()">
-        <mat-icon>arrow_back</mat-icon>
-      </button>
-      <span>{{ albumName() || 'Fotos hochladen' }}</span>
-    </mat-toolbar>
-
     <div class="upload-container">
       <!-- Drop Zone -->
       <div class="drop-zone"
@@ -183,10 +175,11 @@ import { UploadService, type UploadProgress } from '../../core/upload/upload.ser
     }
   `]
 })
-export class UploadComponent implements OnInit {
+export class UploadComponent implements OnInit, OnDestroy {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly uploadService = inject(UploadService);
+  private readonly toolbar = inject(ToolbarService);
 
   uploads = this.uploadService.activeUploads;
   isDragging = signal(false);
@@ -197,7 +190,15 @@ export class UploadComponent implements OnInit {
     this.route.queryParams.subscribe(params => {
       this.albumId.set(params['albumId'] || '');
       this.albumName.set(params['albumName'] || '');
+      this.toolbar.set({
+        title: params['albumName'] || 'Fotos hochladen',
+        backAction: () => this.goBack(),
+      });
     });
+  }
+
+  ngOnDestroy(): void {
+    this.toolbar.reset();
   }
 
   hasDone(): boolean {

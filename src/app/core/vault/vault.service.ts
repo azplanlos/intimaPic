@@ -298,18 +298,21 @@ export class VaultService {
 
   /**
    * Ensure settings.json exists in the vault and sync the vault name.
-   * If settings.json has a name, update the local registry to match.
-   * If settings.json is missing, create it with the local registry name.
+   * The local registry name is authoritative — if it differs from remote,
+   * the remote settings are updated. If no settings.json exists, it is created.
    */
   private async syncVaultSettings(vaultId: string, localName: string): Promise<void> {
     if (!this.activeAdapter) return;
 
     try {
-      const settings = await this.vaultSettings.ensureSettings(this.activeAdapter, localName);
+      const settings = await this.vaultSettings.readSettings(this.activeAdapter);
 
-      // If the remote settings have a different name, sync it to the local registry
-      if (settings.name && settings.name !== localName) {
-        this.registry.renameVault(vaultId, settings.name);
+      if (!settings) {
+        // No settings file yet — create it with the local name
+        await this.vaultSettings.ensureSettings(this.activeAdapter, localName);
+      } else if (settings.name !== localName) {
+        // Local name was changed (e.g. renamed on vault-select screen) — push to remote
+        await this.vaultSettings.updateName(this.activeAdapter, localName);
       }
     } catch {
       // Non-critical — don't block unlock if settings sync fails
