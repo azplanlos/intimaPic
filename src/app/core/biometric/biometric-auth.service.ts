@@ -6,19 +6,22 @@ import { NativeWebAuthnService } from './native-webauthn.service';
 import type { BiometricCredential } from './biometric.models';
 
 /**
- * Service for WebAuthn biometric authentication using the PRF extension.
+ * Service for WebAuthn biometric authentication with automatic fallback.
+ * All operations are scoped to a specific vault ID.
  *
- * The PRF (Pseudo-Random Function) extension allows generating a
- * deterministic, device-bound secret during WebAuthn authentication.
- * This secret is used as a KEK to wrap/unwrap the vault's master keys,
- * enabling passwordless unlock via FaceID, Windows Hello, or Touch ID.
+ * Two modes are supported:
  *
- * Flow:
- * 1. Registration: User authenticates with password first, then registers
- *    a biometric credential. The PRF output is used to AES-KW wrap the
- *    currently-loaded master keys.
- * 2. Authentication: PRF output is derived from biometric auth, used to
- *    AES-KW unwrap the stored wrapped keys → master keys loaded.
+ * 1. PRF mode (preferred):
+ *    Uses the WebAuthn PRF extension to derive a hardware-bound KEK that
+ *    wraps/unwraps the vault master keys. Most secure – keys are bound to
+ *    the authenticator hardware. Supported on iOS/macOS (iCloud Keychain),
+ *    Android (Google Password Manager).
+ *
+ * 2. Gatekeeper mode (fallback):
+ *    Used when PRF is not available (e.g. Windows Hello). WebAuthn serves
+ *    only as a biometric presence check. Master keys are encrypted with a
+ *    non-extractable AES-GCM CryptoKey stored in IndexedDB. After successful
+ *    biometric assertion, the CryptoKey is used to decrypt the master keys.
  */
 @Injectable({ providedIn: 'root' })
 export class BiometricAuthService {
@@ -27,12 +30,11 @@ export class BiometricAuthService {
   private readonly nativeWebAuthn = inject(NativeWebAuthnService);
 
   /**
-   * Check if WebAuthn with PRF extension is available on this device.
+   * Check if biometric authentication is available on this device.
    */
   async isAvailable(): Promise<boolean> {
     if (!window.PublicKeyCredential) return false;
 
-    // Use the native (unpatched) check to bypass password manager wrappers
     try {
       return await this.nativeWebAuthn.isPlatformAuthenticatorAvailable();
     } catch {
@@ -41,55 +43,49 @@ export class BiometricAuthService {
   }
 
   /**
-   * Check if any biometric credentials are registered for this vault.
+   * Check if any biometric credentials are registered for a specific vault.
    */
-  async hasRegisteredCredentials(): Promise<boolean> {
-    return this.credentialStore.hasCredentials();
+  async hasRegisteredCredentials(vaultId: string): Promise<boolean> {
+    return this.credentialStore.hasCredentials(vaultId);
   }
 
   /**
-   * Get all registered credentials.
+   * Get all registered credentials for a specific vault.
    */
-  async getRegisteredCredentials(): Promise<BiometricCredential[]> {
-    return this.credentialStore.getAllCredentials();
+  async getRegisteredCredentials(vaultId: string): Promise<BiometricCredential[]> {
+    return this.credentialStore.getAllCredentials(vaultId);
   }
 
   // ─── Registration ──────────────────────────────────────────────────
 
   /**
-   * Register a new biometric credential for the current device.
+   * Register a new biometric credential for the current device and vault.
+   * Automatically selects PRF mode or gatekeeper mode based on platform support.
    * The vault must be unlocked (master keys loaded) before calling this.
    *
+   * @param vaultId - The vault to register biometrics for
    * @param deviceName - User-friendly name for this device
-   * @returns The registered credential, or null if registration failed
+   * @param vaultName - Display name of the vault (shown in authenticator UI)
+   * @returns The registered credential, or null if registration failed/cancelled
    */
-  async registerCredential(deviceName: string): Promise<BiometricCredential | null> {
+  async registerCredential(vaultId: string, deviceName: string, vaultName?: string): Promise<BiometricCredential | null> {
     if (!this.cryptoService.isUnlocked) {
       throw new Error('Vault must be unlocked to register biometric credentials');
     }
 
     const rpId = window.location.hostname;
 
-    // Generate a random salt for the PRF input
+    // Generate a random salt for the PRF input (used if PRF is available)
     const prfSalt = crypto.getRandomValues(new Uint8Array(32));
 
-    // Build the PRF extension input
-    const prfExtension = {
-      prf: {
-        eval: {
-          first: prfSalt.buffer as ArrayBuffer,
-        },
-      },
-    };
-
-    // Get existing credentials to exclude (prevent duplicate registrations)
-    const existingCredentials = await this.credentialStore.getAllCredentials();
+    // Get existing credentials for this vault to exclude (prevent duplicate registrations)
+    const existingCredentials = await this.credentialStore.getAllCredentials(vaultId);
     const excludeCredentials: PublicKeyCredentialDescriptor[] = existingCredentials.map(c => ({
       type: 'public-key' as const,
       id: this.base64UrlToBuffer(c.id),
     }));
 
-    // Create credential options
+    // Create credential options – request PRF but don't require it
     const userId = crypto.getRandomValues(new Uint8Array(32));
     const challenge = crypto.getRandomValues(new Uint8Array(32));
 
@@ -100,8 +96,10 @@ export class BiometricAuthService {
       },
       user: {
         id: userId,
-        name: 'vault-user',
-        displayName: deviceName,
+        // Stable vault ID as user name (for uniqueness across vaults)
+        name: `vault-${vaultId}`,
+        // Show vault name + device name in the authenticator UI
+        displayName: vaultName ? `${vaultName} – ${deviceName}` : deviceName,
       },
       challenge,
       pubKeyCredParams: [
@@ -111,17 +109,18 @@ export class BiometricAuthService {
       authenticatorSelection: {
         authenticatorAttachment: 'platform',
         userVerification: 'required',
-        // PRF extension requires a resident key on most platform authenticators,
-        // so we must use 'required' here. The hints + transports approach below
-        // handles 1Password bypass instead.
         residentKey: 'required',
       },
-      // Hint the browser/OS to prefer the built-in platform authenticator
-      // (Windows Hello, Touch ID, FaceID) over third-party credential providers.
       hints: ['client-device'],
       timeout: 60000,
       excludeCredentials,
-      extensions: prfExtension as AuthenticationExtensionsClientInputs,
+      extensions: {
+        prf: {
+          eval: {
+            first: prfSalt.buffer as ArrayBuffer,
+          },
+        },
+      } as AuthenticationExtensionsClientInputs,
     } as PublicKeyCredentialCreationOptions;
 
     try {
@@ -136,44 +135,29 @@ export class BiometricAuthService {
         prf?: { enabled?: boolean; results?: { first?: ArrayBuffer } };
       };
 
-      if (!extensionResults.prf?.enabled && !extensionResults.prf?.results?.first) {
-        // PRF not supported – need to try authentication to get PRF output
-        // Some authenticators only provide PRF output during assertion, not creation.
-        // We'll do an immediate get() to obtain the PRF output.
-        const prfKey = await this.getPrfKeyFromAssertion(
-          credential.rawId,
-          prfSalt,
-          rpId
-        );
+      const prfEnabled = extensionResults.prf?.enabled || !!extensionResults.prf?.results?.first;
 
-        if (!prfKey) {
-          throw new Error('PRF extension not supported by this authenticator');
-        }
-
-        return this.wrapAndStoreCredential(
-          credential.rawId,
-          deviceName,
-          prfSalt,
-          prfKey,
-          rpId
-        );
+      if (prfEnabled && extensionResults.prf?.results?.first) {
+        // PRF was provided during creation → use PRF mode
+        const prfOutput = extensionResults.prf.results.first;
+        const prfKek = await this.derivePrfKek(prfOutput);
+        return this.registerWithPrf(vaultId, credential.rawId, deviceName, prfSalt, prfKek, rpId);
       }
 
-      // PRF was provided during creation
-      const prfOutput = extensionResults.prf!.results!.first!;
-      const prfKey = await this.derivePrfKek(prfOutput);
+      if (prfEnabled) {
+        // PRF is enabled but output only available during assertion
+        const prfKek = await this.getPrfKeyFromAssertion(credential.rawId, prfSalt, rpId);
+        if (prfKek) {
+          return this.registerWithPrf(vaultId, credential.rawId, deviceName, prfSalt, prfKek, rpId);
+        }
+      }
 
-      return this.wrapAndStoreCredential(
-        credential.rawId,
-        deviceName,
-        prfSalt,
-        prfKey,
-        rpId
-      );
+      // PRF not available → fall back to gatekeeper mode
+      return this.registerWithGatekeeper(vaultId, credential.rawId, deviceName, rpId);
+
     } catch (err) {
       if (err instanceof DOMException && err.name === 'NotAllowedError') {
-        // User cancelled
-        return null;
+        return null; // User cancelled
       }
       throw err;
     }
@@ -182,32 +166,107 @@ export class BiometricAuthService {
   // ─── Authentication ────────────────────────────────────────────────
 
   /**
-   * Authenticate using biometric and unlock the vault.
+   * Authenticate using biometric and unlock a specific vault.
+   * Automatically handles both PRF and gatekeeper mode credentials.
    * Returns true if authentication succeeded and master keys are loaded.
+   *
+   * @param vaultId - The vault to authenticate for
    */
-  async authenticate(): Promise<boolean> {
-    const store = await this.credentialStore.getStore();
+  async authenticate(vaultId: string): Promise<boolean> {
+    const store = await this.credentialStore.getVaultStore(vaultId);
     if (store.credentials.length === 0) return false;
 
     const rpId = store.rpId || window.location.hostname;
 
-    // We need PRF for each credential's salt – we'll try all and see which one the user picks
-    // Since we can only supply one PRF eval per assertion, we use a two-step approach:
-    // 1. First assertion without PRF to identify which credential was used
-    // 2. Then a second assertion with the correct salt for that credential
-    // ... Actually, we can use evalByCredential to provide salts for all credentials at once!
+    // Check if any credentials use PRF mode
+    const prfCredentials = store.credentials.filter(c => c.mode === 'prf');
+    const gatekeeperCredentials = store.credentials.filter(c => c.mode === 'gatekeeper');
 
+    // If we have PRF credentials, try PRF authentication first
+    if (prfCredentials.length > 0) {
+      const result = await this.authenticateWithPrf(vaultId, prfCredentials, rpId);
+      if (result) return true;
+    }
+
+    // If we have gatekeeper credentials, try gatekeeper authentication
+    if (gatekeeperCredentials.length > 0) {
+      return this.authenticateWithGatekeeper(vaultId, gatekeeperCredentials, rpId);
+    }
+
+    return false;
+  }
+
+  // ─── Credential Removal ────────────────────────────────────────────
+
+  async removeCredential(vaultId: string, credentialId: string): Promise<void> {
+    await this.credentialStore.removeCredential(vaultId, credentialId);
+  }
+
+  async renameCredential(vaultId: string, credentialId: string, newName: string): Promise<void> {
+    await this.credentialStore.updateDeviceName(vaultId, credentialId, newName);
+  }
+
+  /**
+   * Clear all biometric data for a specific vault.
+   */
+  async clearVault(vaultId: string): Promise<void> {
+    await this.credentialStore.clearVault(vaultId);
+  }
+
+  /**
+   * Clear ALL biometric data across all vaults (full reset).
+   */
+  async clearAll(): Promise<void> {
+    await this.credentialStore.clearAll();
+  }
+
+  // ─── PRF Mode: Registration ────────────────────────────────────────
+
+  private async registerWithPrf(
+    vaultId: string,
+    rawId: ArrayBuffer,
+    deviceName: string,
+    prfSalt: Uint8Array,
+    prfKek: ArrayBuffer,
+    rpId: string
+  ): Promise<BiometricCredential> {
+    const masterKeysRaw = await this.cryptoService.exportMasterKeys();
+    const encryptionKey = masterKeysRaw.slice(0, 32);
+    const macKey = masterKeysRaw.slice(32, 64);
+
+    const wrappedEncKey = await aesKeyWrap(encryptionKey, prfKek);
+    const wrappedMacKey = await aesKeyWrap(macKey, prfKek);
+
+    const credential: BiometricCredential = {
+      id: this.bufferToBase64Url(rawId),
+      deviceName,
+      createdAt: new Date().toISOString(),
+      lastUsedAt: null,
+      mode: 'prf',
+      wrappedEncryptionKey: this.bufferToBase64(wrappedEncKey),
+      wrappedMacKey: this.bufferToBase64(wrappedMacKey),
+      prfSalt: this.bufferToBase64(prfSalt.buffer as ArrayBuffer),
+    };
+
+    await this.credentialStore.addCredential(vaultId, credential, rpId);
+    return credential;
+  }
+
+  // ─── PRF Mode: Authentication ──────────────────────────────────────
+
+  private async authenticateWithPrf(
+    vaultId: string,
+    credentials: BiometricCredential[],
+    rpId: string
+  ): Promise<boolean> {
     const evalByCredential: Record<string, { first: ArrayBuffer }> = {};
-    for (const cred of store.credentials) {
-      const credIdB64 = cred.id;
-      const salt = this.base64ToBuffer(cred.prfSalt);
-      evalByCredential[credIdB64] = { first: salt };
+    for (const cred of credentials) {
+      evalByCredential[cred.id] = { first: this.base64ToBuffer(cred.prfSalt!) };
     }
 
     const challenge = crypto.getRandomValues(new Uint8Array(32));
 
-    // Add transport hint to help the browser route directly to the platform authenticator
-    const allowCredentialsWithTransport: PublicKeyCredentialDescriptor[] = store.credentials.map(c => ({
+    const allowCredentials: PublicKeyCredentialDescriptor[] = credentials.map(c => ({
       type: 'public-key' as const,
       id: this.base64UrlToBuffer(c.id),
       transports: ['internal' as AuthenticatorTransport],
@@ -216,17 +275,14 @@ export class BiometricAuthService {
     const getOptions: PublicKeyCredentialRequestOptions = {
       rpId,
       challenge,
-      allowCredentials: allowCredentialsWithTransport,
+      allowCredentials,
       userVerification: 'required',
-      // Hint the browser/OS to prefer the built-in platform authenticator
-      // (Windows Hello, Touch ID, FaceID) over third-party credential providers.
       hints: ['client-device'],
       timeout: 60000,
       extensions: {
         prf: {
           eval: {
-            // Use the first credential's salt as fallback
-            first: this.base64ToBuffer(store.credentials[0].prfSalt),
+            first: this.base64ToBuffer(credentials[0].prfSalt!),
           },
           evalByCredential,
         },
@@ -240,78 +296,151 @@ export class BiometricAuthService {
 
       if (!assertion) return false;
 
-      // Get PRF output
       const extensionResults = assertion.getClientExtensionResults() as AuthenticationExtensionsClientOutputs & {
         prf?: { results?: { first?: ArrayBuffer } };
       };
 
       const prfOutput = extensionResults.prf?.results?.first;
-      if (!prfOutput) {
-        throw new Error('PRF output not available');
-      }
+      if (!prfOutput) return false;
 
-      // Find which credential was used
       const usedCredId = this.bufferToBase64Url(assertion.rawId);
-      const storedCred = store.credentials.find(c => c.id === usedCredId);
-      if (!storedCred) {
-        throw new Error('Unknown credential used');
-      }
+      const storedCred = credentials.find(c => c.id === usedCredId);
+      if (!storedCred) return false;
 
-      // Derive KEK from PRF output
       const prfKek = await this.derivePrfKek(prfOutput);
 
-      // Unwrap master keys
       const encryptionKey = await aesKeyUnwrap(
-        this.base64ToBuffer(storedCred.wrappedEncryptionKey),
+        this.base64ToBuffer(storedCred.wrappedEncryptionKey!),
         prfKek
       );
       const macKey = await aesKeyUnwrap(
-        this.base64ToBuffer(storedCred.wrappedMacKey),
+        this.base64ToBuffer(storedCred.wrappedMacKey!),
         prfKek
       );
 
-      // Load keys into CryptoService
       const combined = new Uint8Array(64);
       combined.set(new Uint8Array(encryptionKey), 0);
       combined.set(new Uint8Array(macKey), 32);
       await this.cryptoService.importMasterKeys(combined.buffer as ArrayBuffer);
 
-      // Update last used
-      await this.credentialStore.updateLastUsed(usedCredId);
-
+      await this.credentialStore.updateLastUsed(vaultId, usedCredId);
       return true;
     } catch (err) {
       if (err instanceof DOMException && err.name === 'NotAllowedError') {
-        return false; // User cancelled
+        return false;
       }
-      console.error('Biometric authentication failed:', err);
+      console.error('PRF biometric authentication failed:', err);
       return false;
     }
   }
 
-  // ─── Credential Removal ────────────────────────────────────────────
+  // ─── Gatekeeper Mode: Registration ─────────────────────────────────
 
-  async removeCredential(credentialId: string): Promise<void> {
-    await this.credentialStore.removeCredential(credentialId);
+  private async registerWithGatekeeper(
+    vaultId: string,
+    rawId: ArrayBuffer,
+    deviceName: string,
+    rpId: string
+  ): Promise<BiometricCredential> {
+    const cryptoKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      false, // non-extractable
+      ['encrypt', 'decrypt']
+    );
+
+    const masterKeysRaw = await this.cryptoService.exportMasterKeys();
+    const encryptionKeyData = masterKeysRaw.slice(0, 32);
+    const macKeyData = masterKeysRaw.slice(32, 64);
+
+    const encEncKey = await this.aesGcmEncrypt(cryptoKey, encryptionKeyData);
+    const encMacKey = await this.aesGcmEncrypt(cryptoKey, macKeyData);
+
+    const credentialId = this.bufferToBase64Url(rawId);
+
+    const credential: BiometricCredential = {
+      id: credentialId,
+      deviceName,
+      createdAt: new Date().toISOString(),
+      lastUsedAt: null,
+      mode: 'gatekeeper',
+      encryptedEncryptionKey: this.bufferToBase64(encEncKey),
+      encryptedMacKey: this.bufferToBase64(encMacKey),
+    };
+
+    await this.credentialStore.saveCryptoKey(credentialId, cryptoKey);
+    await this.credentialStore.addCredential(vaultId, credential, rpId);
+
+    return credential;
   }
 
-  async renameCredential(credentialId: string, newName: string): Promise<void> {
-    await this.credentialStore.updateDeviceName(credentialId, newName);
+  // ─── Gatekeeper Mode: Authentication ───────────────────────────────
+
+  private async authenticateWithGatekeeper(
+    vaultId: string,
+    credentials: BiometricCredential[],
+    rpId: string
+  ): Promise<boolean> {
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+
+    const allowCredentials: PublicKeyCredentialDescriptor[] = credentials.map(c => ({
+      type: 'public-key' as const,
+      id: this.base64UrlToBuffer(c.id),
+      transports: ['internal' as AuthenticatorTransport],
+    }));
+
+    const getOptions: PublicKeyCredentialRequestOptions = {
+      rpId,
+      challenge,
+      allowCredentials,
+      userVerification: 'required',
+      hints: ['client-device'],
+      timeout: 60000,
+    } as PublicKeyCredentialRequestOptions;
+
+    try {
+      const assertion = await this.nativeWebAuthn.get({
+        publicKey: getOptions,
+      });
+
+      if (!assertion) return false;
+
+      const usedCredId = this.bufferToBase64Url(assertion.rawId);
+      const storedCred = credentials.find(c => c.id === usedCredId);
+      if (!storedCred) return false;
+
+      const cryptoKey = await this.credentialStore.getCryptoKey(usedCredId);
+      if (!cryptoKey) {
+        console.error('CryptoKey not found for credential:', usedCredId);
+        return false;
+      }
+
+      const encryptionKey = await this.aesGcmDecrypt(
+        cryptoKey,
+        this.base64ToBuffer(storedCred.encryptedEncryptionKey!)
+      );
+      const macKey = await this.aesGcmDecrypt(
+        cryptoKey,
+        this.base64ToBuffer(storedCred.encryptedMacKey!)
+      );
+
+      const combined = new Uint8Array(64);
+      combined.set(new Uint8Array(encryptionKey), 0);
+      combined.set(new Uint8Array(macKey), 32);
+      await this.cryptoService.importMasterKeys(combined.buffer as ArrayBuffer);
+
+      await this.credentialStore.updateLastUsed(vaultId, usedCredId);
+      return true;
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'NotAllowedError') {
+        return false;
+      }
+      console.error('Gatekeeper biometric authentication failed:', err);
+      return false;
+    }
   }
 
-  /**
-   * Clear all biometric data (used on vault reset).
-   */
-  async clearAll(): Promise<void> {
-    await this.credentialStore.clear();
-  }
+  // ─── PRF Helpers ───────────────────────────────────────────────────
 
-  // ─── Private Helpers ───────────────────────────────────────────────
-
-  /**
-   * Get PRF output via a get() assertion (for authenticators that don't
-   * provide PRF during create()).
-   */
   private async getPrfKeyFromAssertion(
     credentialId: ArrayBuffer,
     prfSalt: Uint8Array,
@@ -359,44 +488,6 @@ export class BiometricAuthService {
     }
   }
 
-  /**
-   * Wrap master keys and store the credential.
-   */
-  private async wrapAndStoreCredential(
-    rawId: ArrayBuffer,
-    deviceName: string,
-    prfSalt: Uint8Array,
-    prfKek: ArrayBuffer,
-    rpId: string
-  ): Promise<BiometricCredential> {
-    // Export current master keys
-    const masterKeysRaw = await this.cryptoService.exportMasterKeys();
-    const encryptionKey = masterKeysRaw.slice(0, 32);
-    const macKey = masterKeysRaw.slice(32, 64);
-
-    // Wrap with PRF-derived KEK
-    const wrappedEncKey = await aesKeyWrap(encryptionKey, prfKek);
-    const wrappedMacKey = await aesKeyWrap(macKey, prfKek);
-
-    const credential: BiometricCredential = {
-      id: this.bufferToBase64Url(rawId),
-      deviceName,
-      createdAt: new Date().toISOString(),
-      lastUsedAt: null,
-      wrappedEncryptionKey: this.bufferToBase64(wrappedEncKey),
-      wrappedMacKey: this.bufferToBase64(wrappedMacKey),
-      prfSalt: this.bufferToBase64(prfSalt.buffer as ArrayBuffer),
-    };
-
-    await this.credentialStore.addCredential(credential, rpId);
-    return credential;
-  }
-
-  /**
-   * Derive a 256-bit KEK from PRF output using HKDF-SHA256.
-   * The PRF output is already pseudorandom, but HKDF ensures proper
-   * key separation and fixed output length.
-   */
   private async derivePrfKek(prfOutput: ArrayBuffer): Promise<ArrayBuffer> {
     const keyMaterial = await crypto.subtle.importKey(
       'raw',
@@ -412,11 +503,37 @@ export class BiometricAuthService {
       {
         name: 'HKDF',
         hash: 'SHA-256',
-        salt: new Uint8Array(32), // Fixed empty salt – PRF output is already keyed
+        salt: new Uint8Array(32),
         info,
       },
       keyMaterial,
       256
+    );
+  }
+
+  // ─── AES-GCM Helpers (for gatekeeper mode) ─────────────────────────
+
+  private async aesGcmEncrypt(key: CryptoKey, data: ArrayBuffer): Promise<ArrayBuffer> {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv },
+      key,
+      data
+    );
+
+    const result = new Uint8Array(12 + ciphertext.byteLength);
+    result.set(iv, 0);
+    result.set(new Uint8Array(ciphertext), 12);
+    return result.buffer as ArrayBuffer;
+  }
+
+  private async aesGcmDecrypt(key: CryptoKey, data: ArrayBuffer): Promise<ArrayBuffer> {
+    const iv = data.slice(0, 12);
+    const ciphertext = data.slice(12);
+    return crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv },
+      key,
+      ciphertext
     );
   }
 

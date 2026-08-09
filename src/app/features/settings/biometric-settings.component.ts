@@ -9,6 +9,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatDialogModule, MatDialog } from '@angular/material/dialog';
 import { BiometricAuthService } from '../../core/biometric/biometric-auth.service';
+import { VaultRegistryService } from '../../core/vault/vault-registry.service';
 import type { BiometricCredential } from '../../core/biometric/biometric.models';
 
 @Component({
@@ -225,6 +226,7 @@ import type { BiometricCredential } from '../../core/biometric/biometric.models'
 export class BiometricSettingsComponent implements OnInit {
   private readonly router = inject(Router);
   private readonly biometricAuth = inject(BiometricAuthService);
+  private readonly registry = inject(VaultRegistryService);
 
   credentials = signal<BiometricCredential[]>([]);
   loading = signal(true);
@@ -242,7 +244,8 @@ export class BiometricSettingsComponent implements OnInit {
 
   async loadCredentials(): Promise<void> {
     this.loading.set(true);
-    const creds = await this.biometricAuth.getRegisteredCredentials();
+    const vaultId = this.registry.activeVaultId();
+    const creds = vaultId ? await this.biometricAuth.getRegisteredCredentials(vaultId) : [];
     this.credentials.set(creds);
     this.loading.set(false);
   }
@@ -256,7 +259,8 @@ export class BiometricSettingsComponent implements OnInit {
     this.success.set(null);
 
     try {
-      const credential = await this.biometricAuth.registerCredential(name);
+      const vault = this.registry.activeVault();
+      const credential = await this.biometricAuth.registerCredential(vault!.id, name, vault!.name);
 
       if (credential) {
         this.success.set(`"${name}" wurde erfolgreich hinzugefügt.`);
@@ -279,7 +283,7 @@ export class BiometricSettingsComponent implements OnInit {
       return;
     }
 
-    await this.biometricAuth.removeCredential(cred.id);
+    await this.biometricAuth.removeCredential(this.registry.activeVaultId()!, cred.id);
     this.success.set(`"${cred.deviceName}" wurde entfernt.`);
     await this.loadCredentials();
   }

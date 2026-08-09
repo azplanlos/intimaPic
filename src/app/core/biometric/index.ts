@@ -1,3 +1,3 @@
 export { BiometricAuthService } from './biometric-auth.service';
 export { BiometricCredentialStore } from './biometric-credential.store';
-export type { BiometricCredential, BiometricStore } from './biometric.models';
+export type { BiometricCredential, BiometricVaultStore } from './biometric.models';

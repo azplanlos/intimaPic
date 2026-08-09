@@ -263,7 +263,7 @@ export class VaultService {
       const settings = vault.storageSettings;
 
       // 1. Authenticate biometrically (loads master keys via PRF)
-      const authSuccess = await this.biometricAuth.authenticate();
+      const authSuccess = await this.biometricAuth.authenticate(vault.id);
       if (!authSuccess) {
         this._error.set('Biometrische Authentifizierung fehlgeschlagen.');
         return false;
@@ -287,9 +287,12 @@ export class VaultService {
    * Check if biometric unlock is available for the active vault.
    */
   async isBiometricAvailable(): Promise<boolean> {
+    const vault = this.registry.activeVault();
+    if (!vault) return false;
+
     const [platformAvailable, hasCredentials] = await Promise.all([
       this.biometricAuth.isAvailable(),
-      this.biometricAuth.hasRegisteredCredentials(),
+      this.biometricAuth.hasRegisteredCredentials(vault.id),
     ]);
     return platformAvailable && hasCredentials;
   }
@@ -379,10 +382,10 @@ export class VaultService {
    */
   async reset(): Promise<void> {
     await this.lockVault();
-    await this.biometricStore.clear();
 
     const activeId = this.registry.activeVaultId();
     if (activeId) {
+      await this.biometricStore.clearVault(activeId);
       this.registry.removeVault(activeId);
     }
 
@@ -398,7 +401,7 @@ export class VaultService {
    */
   async resetAll(): Promise<void> {
     await this.lockVault();
-    await this.biometricStore.clear();
+    await this.biometricStore.clearAll();
     this.registry.clearAll();
     this._status.set('none');
   }
