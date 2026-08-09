@@ -1,0 +1,487 @@
+{
+  "pbtResults": {
+    "2.2 Write property test for MetadataStore round-trip": {
+      "status": "passed",
+      "lastRunTimestamp": 1786286646267
+    },
+    "3.2 Write property test for EXIF extraction fidelity": {
+      "status": "passed",
+      "lastRunTimestamp": 1786286922099
+    },
+    "6.2 Write property tests for sort correctness": {
+      "status": "passed",
+      "lastRunTimestamp": 1786287804011
+    },
+    "4.4 Write property tests for MetadataService": {
+      "status": "passed",
+      "lastRunTimestamp": 1786288074826
+    },
+    "4.5 Write property tests for favorite toggle and rating logic": {
+      "status": "passed",
+      "lastRunTimestamp": 1786291074301
+    }
+  },
+  "executionHistory": {
+    "1.1 Install exifr and dexie npm packages": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286000079
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286012273
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286082157
+      }
+    ],
+    "1.2 Create metadata data models": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286000349
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286012901
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286081457
+      }
+    ],
+    "2.1 Create MetadataStore service using Dexie.js": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286000498
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286086257
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286389369
+      }
+    ],
+    "2.2 Write property test for MetadataStore round-trip": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286000643
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286394337
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286936870
+      }
+    ],
+    "3.1 Create ExifExtractor service": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286000796
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286087042
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286390024
+      }
+    ],
+    "3.2 Write property test for EXIF extraction fidelity": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286000972
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286395009
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286937968
+      }
+    ],
+    "4.1 Create MetadataService core with lifecycle and cache": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286001133
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286943036
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287452374
+      }
+    ],
+    "4.2 Implement flush timer and sync logic": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286001309
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287457209
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287861799
+      }
+    ],
+    "4.3 Implement EXIF extraction and rating/favorite CRUD methods": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286001463
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287457964
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287860959
+      }
+    ],
+    "4.4 Write property tests for MetadataService": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286001717
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287867140
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786291092514
+      }
+    ],
+    "4.5 Write property tests for favorite toggle and rating logic": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286001853
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287867860
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786291093677
+      }
+    ],
+    "5. Checkpoint - Ensure core services compile and tests pass": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286002006
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786291107377
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786292370097
+      }
+    ],
+    "6.1 Create sort utility functions": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286002162
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286395767
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286938699
+      }
+    ],
+    "6.2 Write property tests for sort correctness": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286002306
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287458835
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287859849
+      }
+    ],
+    "7.1 Create RatingComponent": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286002466
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286943820
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287450553
+      }
+    ],
+    "7.2 Create SortControlComponent": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286002616
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286944447
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287451322
+      }
+    ],
+    "7.3 Write unit tests for RatingComponent and SortControlComponent": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286002785
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287459530
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287859026
+      }
+    ],
+    "8.1 Add sort control and metadata loading to AlbumViewComponent": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286002983
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786291108192
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786292371401
+      }
+    ],
+    "8.2 Add RatingComponent to photo grid cells": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286003172
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786292377669
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786293173497
+      }
+    ],
+    "9.1 Add EXIF extraction on photo import": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286003410
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786291109026
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786292371898
+      }
+    ],
+    "10.1 Add rating controls to lightbox view": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286003632
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786292378257
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786293172064
+      }
+    ],
+    "11.1 Add background extraction for existing photos": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286003868
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786292379097
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786293172839
+      }
+    ],
+    "12. Final checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286004081
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786293179174
+      },
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786293448029
+      }
+    ],
+    "1. Install dependency and create data models": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286082333
+      }
+    ],
+    "2. Implement MetadataStore (Dexie.js wrapper)": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286937012
+      }
+    ],
+    "3. Implement ExifExtractor service": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786286938198
+      }
+    ],
+    "7. Implement UI components": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287859220
+      }
+    ],
+    "6. Implement sort comparator functions": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786287860023
+      }
+    ],
+    "4. Implement MetadataService (orchestrator)": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786291093992
+      }
+    ],
+    "9. Integrate into ImportScanService": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786292372167
+      }
+    ],
+    "10. Integrate RatingComponent into PhotoSwipe lightbox": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786293172515
+      }
+    ],
+    "11. Background metadata extraction": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786293173172
+      }
+    ],
+    "8. Integrate into AlbumViewComponent": [
+      {
+        "executionId": "053086b0-1435-412e-a975-1a66d178067e",
+        "chatSessionId": "sess_55f4e523-42cf-4672-97a3-49c2de8f04a6",
+        "timestamp": 1786293173744
+      }
+    ]
+  }
+}

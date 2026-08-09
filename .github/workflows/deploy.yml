@@ -32,6 +32,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run unit tests
+        run: npx ng test --no-watch --browsers=ChromeHeadless
+
       - name: Inject Azure credentials from secrets
         run: |
           sed -i "s|__AZURE_CLIENT_ID__|${{ secrets.AZURE_CLIENT_ID }}|g" src/environments/environment.prod.ts

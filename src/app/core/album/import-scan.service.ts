@@ -1,6 +1,7 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { CryptoService } from '../crypto/crypto.service';
 import { VaultService } from '../vault/vault.service';
+import { MetadataService } from '../metadata/metadata.service';
 import type { StorageAdapter } from '../storage/storage-adapter.interface';
 import type { FileEntry } from '../crypto/crypto.models';
 
@@ -36,6 +37,7 @@ export interface UnsortedPhoto {
 export class ImportScanService {
   private readonly crypto = inject(CryptoService);
   private readonly vaultService = inject(VaultService);
+  private readonly metadataService = inject(MetadataService);
 
   private readonly _unsortedPhotos = signal<UnsortedPhoto[]>([]);
   readonly unsortedPhotos = this._unsortedPhotos.asReadonly();
@@ -166,6 +168,14 @@ export class ImportScanService {
     const targetPath = `${targetDirPath}/${newEncryptedName}`;
     await storage.writeFile(targetPath, encryptedData);
 
+    // Extract EXIF metadata from decrypted image data
+    try {
+      const plainData = await this.crypto.decryptFile(encryptedData);
+      await this.metadataService.extractAndStore(newEncryptedName, plainData);
+    } catch {
+      // EXIF extraction failure should not block import
+    }
+
     // Delete from root
     await storage.deleteFile(photo.storagePath);
 
@@ -206,6 +216,13 @@ export class ImportScanService {
     // Write encrypted file to target location
     const targetPath = `${targetDirPath}/${newEncryptedName}`;
     await storage.writeFile(targetPath, encryptedData);
+
+    // Extract EXIF metadata from original unencrypted image data
+    try {
+      await this.metadataService.extractAndStore(newEncryptedName, plainData);
+    } catch {
+      // EXIF extraction failure should not block import
+    }
 
     // Delete the plaintext original from root
     await storage.deleteFile(photo.storagePath);

@@ -127,6 +127,11 @@ export class VaultService {
       // 8. Register vault in the registry
       this.registry.addVault(name, settings);
 
+      // 9. Initialize metadata service
+      const { MetadataService } = await import('../metadata/metadata.service');
+      const metadataService = this.injector.get(MetadataService);
+      await metadataService.initialize();
+
       this._status.set('unlocked');
       return true;
     } catch (err) {
@@ -236,6 +241,11 @@ export class VaultService {
       // 4. Ensure vault settings file exists and sync name
       await this.syncVaultSettings(vault.id, vault.name);
 
+      // 5. Initialize metadata service (load & merge local+remote metadata)
+      const { MetadataService } = await import('../metadata/metadata.service');
+      const metadataService = this.injector.get(MetadataService);
+      await metadataService.initialize();
+
       this._status.set('unlocked');
       return true;
     } catch (err) {
@@ -274,6 +284,11 @@ export class VaultService {
 
       // 3. Ensure vault settings file exists and sync name
       await this.syncVaultSettings(vault.id, vault.name);
+
+      // 4. Initialize metadata service (load & merge local+remote metadata)
+      const { MetadataService } = await import('../metadata/metadata.service');
+      const metadataService = this.injector.get(MetadataService);
+      await metadataService.initialize();
 
       this._status.set('unlocked');
       return true;
@@ -325,6 +340,11 @@ export class VaultService {
   // ─── Vault Lock ───────────────────────────────────────────────────
 
   async lockVault(): Promise<void> {
+    // Flush and tear down metadata before disconnecting storage
+    const { MetadataService } = await import('../metadata/metadata.service');
+    const metadataService = this.injector.get(MetadataService);
+    await metadataService.teardown();
+
     // Lazy-resolve PhotoService to avoid circular dependency
     const { PhotoService } = await import('../album/photo.service');
     const photoService = this.injector.get(PhotoService);

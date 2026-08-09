@@ -39,3 +39,119 @@ body { margin: 0; font-family: Roboto, "Helvetica Neue", sans-serif; }
 
 /* PhotoSwipe */
 @import 'photoswipe/dist/photoswipe.css';
+
+/* PhotoSwipe counter - positioned in the top-left toolbar area */
+.pswp__counter {
+  opacity: 0.85;
+  font-size: 14px;
+}
+
+/* PhotoSwipe Rating Control */
+.pswp__rating-control {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+}
+
+.pswp__rating-inner {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 16px;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 24px;
+  backdrop-filter: blur(8px);
+}
+
+.pswp__rating-heart-btn,
+.pswp__rating-star {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: color 0.15s, background-color 0.15s;
+}
+
+.pswp__rating-heart-btn {
+  color: #E91E63;
+}
+
+.pswp__rating-star {
+  color: #FFD700;
+}
+
+.pswp__rating-heart-btn:hover,
+.pswp__rating-star:hover {
+  background-color: rgba(255, 255, 255, 0.15);
+}
+
+.pswp__rating-heart-btn .heart-filled {
+  color: #E91E63;
+}
+
+.pswp__rating-stars {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.pswp__rating-star .star-filled {
+  color: #FFD700;
+}
+
+/* PhotoSwipe Info Overlay */
+.pswp__info-overlay {
+  position: fixed;
+  bottom: 60px;
+  left: 12px;
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(12px);
+  color: rgba(255, 255, 255, 0.92);
+  padding: 14px 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  width: max-content;
+  min-width: 200px;
+  max-width: 50vw;
+  z-index: 100000;
+  transition: opacity 0.2s, transform 0.2s;
+}
+
+.pswp__info-overlay--hidden {
+  display: none;
+}
+
+.pswp__info-header {
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 8px;
+  word-break: break-word;
+  color: #fff;
+  white-space: normal;
+}
+
+.pswp__info-list {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  white-space: nowrap;
+}
+
+.pswp__info-list dt {
+  color: rgba(255, 255, 255, 0.55);
+  font-weight: 400;
+}
+
+.pswp__info-list dd {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.92);
+  white-space: normal;
+}
