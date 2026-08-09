@@ -63,20 +63,23 @@ import type { VaultInfo } from '../../core/vault/vault-registry.models';
       display: flex;
       flex-direction: column;
       align-items: center;
+      justify-content: center;
       min-height: 100vh;
+      min-height: 100dvh;
       padding: 2rem;
+      box-sizing: border-box;
     }
 
     .header {
       text-align: center;
-      margin-bottom: 2rem;
+      margin-bottom: 1.5rem;
     }
 
     .hero-logo {
-      width: 100px;
-      height: 100px;
-      margin-bottom: 1rem;
-      border-radius: 20px;
+      width: 80px;
+      height: 80px;
+      margin-bottom: 0.75rem;
+      border-radius: 16px;
     }
 
     h2 {
