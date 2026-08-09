@@ -127,6 +127,70 @@ export class VaultService {
     }
   }
 
+  // ─── Connect Existing Vault ─────────────────────────────────────────
+
+  /**
+   * Connect to an existing vault on a new device.
+   * Validates that masterkey.cryptomator exists, saves settings locally,
+   * and sets status to 'locked' so the unlock screen appears.
+   */
+  async connectExistingVault(settings: StorageSettings): Promise<boolean> {
+    try {
+      this._error.set(null);
+
+      // 1. Connect to storage
+      const adapter = await this.storageFactory.connectAdapter(settings);
+
+      // 2. Verify that masterkey.cryptomator exists
+      const masterkeyExists = await adapter.fileExists(
+        this.vaultConfigService.MASTERKEY_FILENAME
+      );
+
+      if (!masterkeyExists) {
+        await adapter.disconnect();
+        this._error.set(
+          'Kein Tresor gefunden. Die Datei masterkey.cryptomator existiert nicht am angegebenen Speicherort.'
+        );
+        return false;
+      }
+
+      // 3. Disconnect (will reconnect on unlock)
+      await adapter.disconnect();
+
+      // 4. Persist settings locally
+      this._storageSettings.set(settings);
+      localStorage.setItem(this.SETTINGS_KEY, JSON.stringify(settings));
+      localStorage.setItem(this.VAULT_EXISTS_KEY, 'true');
+      this._status.set('locked');
+
+      return true;
+    } catch (err) {
+      this._error.set(
+        err instanceof Error ? err.message : 'Verbindung zum bestehenden Tresor fehlgeschlagen.'
+      );
+      return false;
+    }
+  }
+
+  // ─── Vault Existence Check ────────────────────────────────────────
+
+  /**
+   * Check if a vault already exists at the given storage location.
+   * Used by createVault to prevent accidental overwriting.
+   */
+  async vaultExistsAtStorage(settings: StorageSettings): Promise<boolean> {
+    try {
+      const adapter = await this.storageFactory.connectAdapter(settings);
+      const exists = await adapter.fileExists(
+        this.vaultConfigService.MASTERKEY_FILENAME
+      );
+      await adapter.disconnect();
+      return exists;
+    } catch {
+      return false;
+    }
+  }
+
   // ─── Vault Unlock ─────────────────────────────────────────────────
 
   /**

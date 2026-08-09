@@ -101,10 +101,12 @@ export class WelcomeComponent implements OnInit {
   }
 
   createNew(): void {
+    sessionStorage.setItem('intimapic_setup_mode', 'create');
     this.router.navigate(['/setup/provider']);
   }
 
   connectExisting(): void {
+    sessionStorage.setItem('intimapic_setup_mode', 'connect');
     this.router.navigate(['/setup/provider']);
   }
 }
