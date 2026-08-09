@@ -237,33 +237,24 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
     const viewportW = window.innerWidth;
     const viewportH = window.innerHeight;
 
-    // Build data source: use thumbnail as src, but scale dimensions to fill viewport
-    const dataSource = await Promise.all(
-      photos.map(async (photo) => {
-        const src = photo.previewUrl || photo.thumbnailUrl || '';
-        if (!src) return { src: '', width: viewportW, height: viewportH, msrc: '' };
-
-        const dims = await this.getImageDimensions(src);
-        // Scale up to viewport-filling dimensions (preserving aspect ratio)
-        const scale = Math.max(viewportW / dims.width, viewportH / dims.height);
-        const displayW = Math.round(dims.width * scale);
-        const displayH = Math.round(dims.height * scale);
-
-        return {
-          src,
-          width: displayW,
-          height: displayH,
-          msrc: src,
-        };
-      })
-    );
+    // Build data source synchronously — avoid creating Image objects for every photo.
+    // Use viewport dimensions as placeholder; actual dimensions are resolved on slide upgrade.
+    const dataSource = photos.map((photo) => {
+      const src = photo.previewUrl || photo.thumbnailUrl || '';
+      return {
+        src,
+        width: viewportW,
+        height: viewportH,
+        msrc: photo.thumbnailUrl || src,
+      };
+    });
 
     const options = {
       index: startIndex,
       dataSource,
       bgOpacity: 1,
       showHideAnimationType: 'fade' as const,
-      preload: [1, 2] as [number, number],
+      preload: [1, 1] as [number, number], // Reduced preload to save memory on mobile
     };
 
     this.lightbox = new PhotoSwipe(options);
@@ -293,6 +284,11 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
       this.abortAllSlides();
     });
 
+    // On destroy, release the lightbox reference
+    this.lightbox.on('destroy', () => {
+      this.lightbox = null;
+    });
+
     // Register download button
     this.lightbox.on('uiRegister', () => {
       (this.lightbox as any).ui.registerElement({
@@ -316,9 +312,12 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   /**
-   * Decrypt full-res for a slide and hot-swap it into PhotoSwipe.
+   * Decrypt preview for a slide and hot-swap it into PhotoSwipe.
    * Uses AbortController so the request can be cancelled if the user
    * navigates away from this slide before decryption completes.
+   *
+   * Only calls refreshSlideContent for the current slide to avoid
+   * disrupting PhotoSwipe's gesture/animation state on mobile.
    */
   private async upgradeSlide(index: number, photos: PhotoItem[]): Promise<void> {
     const photo = photos[index];
@@ -354,8 +353,11 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
         ds[index].msrc = url;
       }
 
-      // Tell PhotoSwipe to reload this slide
-      this.lightbox.refreshSlideContent(index);
+      // Only refresh the current slide to avoid interrupting swipe gestures.
+      // Neighbor slides will pick up their new src on next navigation.
+      if (this.lightbox.currIndex === index) {
+        this.lightbox.refreshSlideContent(index);
+      }
     } catch (err) {
       this.slideAbortControllers.delete(index);
       // Silently ignore aborted requests (user navigated away)
@@ -376,12 +378,26 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
 
   /**
    * Get actual dimensions of an image from its blob URL.
+   * Cleans up the Image object after use to prevent memory leaks on mobile.
    */
   private getImageDimensions(src: string): Promise<{ width: number; height: number }> {
     return new Promise((resolve) => {
       const img = new Image();
-      img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
-      img.onerror = () => resolve({ width: 1920, height: 1080 }); // Fallback
+      img.onload = () => {
+        const width = img.naturalWidth;
+        const height = img.naturalHeight;
+        // Release the image reference — critical for mobile memory management
+        img.onload = null;
+        img.onerror = null;
+        img.src = '';
+        resolve({ width, height });
+      };
+      img.onerror = () => {
+        img.onload = null;
+        img.onerror = null;
+        img.src = '';
+        resolve({ width: 1920, height: 1080 }); // Fallback
+      };
       img.src = src;
     });
   }
