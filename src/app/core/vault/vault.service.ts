@@ -272,15 +272,22 @@ export class VaultService {
 
       const settings = vault.storageSettings;
 
-      // 1. Authenticate biometrically (loads master keys via PRF)
+      // 1. Connect to storage FIRST – while the user-gesture is still active.
+      //    This ensures that if an interactive MSAL popup is needed (expired
+      //    refresh token), the browser allows the popup because we're still
+      //    within the original click event's trust window.
+      //    If we did biometric auth first (WebAuthn), the async authenticator
+      //    call consumes the user-gesture, causing popup blockers to fire.
+      this.activeAdapter = await this.storageFactory.connectAdapter(settings);
+
+      // 2. Authenticate biometrically (loads master keys via PRF)
       const authSuccess = await this.biometricAuth.authenticate(vault.id);
       if (!authSuccess) {
         this._error.set('Biometrische Authentifizierung fehlgeschlagen.');
+        await this.activeAdapter.disconnect();
+        this.activeAdapter = null;
         return false;
       }
-
-      // 2. Connect to storage
-      this.activeAdapter = await this.storageFactory.connectAdapter(settings);
 
       // 3. Ensure vault settings file exists and sync name
       await this.syncVaultSettings(vault.id, vault.name);

@@ -101,13 +101,15 @@ import type { VaultInfo } from '../../core/vault/vault-registry.models';
       max-width: 400px;
       display: flex;
       flex-direction: column;
-      gap: 0.75rem;
+      gap: 0.5rem;
       margin-bottom: 1.5rem;
     }
 
     .vault-card {
       cursor: pointer;
       transition: box-shadow 0.2s ease, transform 0.1s ease;
+      margin: 0;
+      padding: 4px 16px;
     }
 
     .vault-card:hover {
@@ -124,7 +126,7 @@ import type { VaultInfo } from '../../core/vault/vault-registry.models';
       display: flex;
       align-items: center;
       gap: 1rem;
-      padding: 0.5rem 0;
+      padding: 0 !important;
     }
 
     .provider-icon {
