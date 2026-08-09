@@ -2,6 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { BiometricCredentialStore } from './biometric-credential.store';
 import { CryptoService } from '../crypto/crypto.service';
 import { aesKeyWrap, aesKeyUnwrap } from '../crypto/aes-keywrap';
+import { NativeWebAuthnService } from './native-webauthn.service';
 import type { BiometricCredential } from './biometric.models';
 
 /**
@@ -23,6 +24,7 @@ import type { BiometricCredential } from './biometric.models';
 export class BiometricAuthService {
   private readonly credentialStore = inject(BiometricCredentialStore);
   private readonly cryptoService = inject(CryptoService);
+  private readonly nativeWebAuthn = inject(NativeWebAuthnService);
 
   /**
    * Check if WebAuthn with PRF extension is available on this device.
@@ -30,10 +32,9 @@ export class BiometricAuthService {
   async isAvailable(): Promise<boolean> {
     if (!window.PublicKeyCredential) return false;
 
-    // Check platform authenticator availability (FaceID, Windows Hello, Touch ID)
+    // Use the native (unpatched) check to bypass password manager wrappers
     try {
-      const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
-      return available;
+      return await this.nativeWebAuthn.isPlatformAuthenticatorAvailable();
     } catch {
       return false;
     }
@@ -110,17 +111,23 @@ export class BiometricAuthService {
       authenticatorSelection: {
         authenticatorAttachment: 'platform',
         userVerification: 'required',
-        residentKey: 'preferred',
+        // PRF extension requires a resident key on most platform authenticators,
+        // so we must use 'required' here. The hints + transports approach below
+        // handles 1Password bypass instead.
+        residentKey: 'required',
       },
+      // Hint the browser/OS to prefer the built-in platform authenticator
+      // (Windows Hello, Touch ID, FaceID) over third-party credential providers.
+      hints: ['client-device'],
       timeout: 60000,
       excludeCredentials,
       extensions: prfExtension as AuthenticationExtensionsClientInputs,
-    };
+    } as PublicKeyCredentialCreationOptions;
 
     try {
-      const credential = await navigator.credentials.create({
+      const credential = await this.nativeWebAuthn.create({
         publicKey: createOptions,
-      }) as PublicKeyCredential | null;
+      });
 
       if (!credential) return null;
 
@@ -184,12 +191,6 @@ export class BiometricAuthService {
 
     const rpId = store.rpId || window.location.hostname;
 
-    // Allow any registered credential
-    const allowCredentials: PublicKeyCredentialDescriptor[] = store.credentials.map(c => ({
-      type: 'public-key' as const,
-      id: this.base64UrlToBuffer(c.id),
-    }));
-
     // We need PRF for each credential's salt – we'll try all and see which one the user picks
     // Since we can only supply one PRF eval per assertion, we use a two-step approach:
     // 1. First assertion without PRF to identify which credential was used
@@ -205,11 +206,21 @@ export class BiometricAuthService {
 
     const challenge = crypto.getRandomValues(new Uint8Array(32));
 
+    // Add transport hint to help the browser route directly to the platform authenticator
+    const allowCredentialsWithTransport: PublicKeyCredentialDescriptor[] = store.credentials.map(c => ({
+      type: 'public-key' as const,
+      id: this.base64UrlToBuffer(c.id),
+      transports: ['internal' as AuthenticatorTransport],
+    }));
+
     const getOptions: PublicKeyCredentialRequestOptions = {
       rpId,
       challenge,
-      allowCredentials,
+      allowCredentials: allowCredentialsWithTransport,
       userVerification: 'required',
+      // Hint the browser/OS to prefer the built-in platform authenticator
+      // (Windows Hello, Touch ID, FaceID) over third-party credential providers.
+      hints: ['client-device'],
       timeout: 60000,
       extensions: {
         prf: {
@@ -220,12 +231,12 @@ export class BiometricAuthService {
           evalByCredential,
         },
       } as AuthenticationExtensionsClientInputs,
-    };
+    } as PublicKeyCredentialRequestOptions;
 
     try {
-      const assertion = await navigator.credentials.get({
+      const assertion = await this.nativeWebAuthn.get({
         publicKey: getOptions,
-      }) as PublicKeyCredential | null;
+      });
 
       if (!assertion) return false;
 
@@ -314,8 +325,10 @@ export class BiometricAuthService {
       allowCredentials: [{
         type: 'public-key',
         id: credentialId,
+        transports: ['internal' as AuthenticatorTransport],
       }],
       userVerification: 'required',
+      hints: ['client-device'],
       timeout: 60000,
       extensions: {
         prf: {
@@ -324,12 +337,12 @@ export class BiometricAuthService {
           },
         },
       } as AuthenticationExtensionsClientInputs,
-    };
+    } as PublicKeyCredentialRequestOptions;
 
     try {
-      const assertion = await navigator.credentials.get({
+      const assertion = await this.nativeWebAuthn.get({
         publicKey: getOptions,
-      }) as PublicKeyCredential | null;
+      });
 
       if (!assertion) return null;
 
