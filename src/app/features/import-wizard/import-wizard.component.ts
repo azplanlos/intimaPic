@@ -1,9 +1,8 @@
-import { Component, inject, signal, OnInit, computed } from '@angular/core';
+import { Component, inject, signal, OnInit, OnDestroy, computed } from '@angular/core';
 import { Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
-import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -17,6 +16,8 @@ import { CryptoService } from '../../core/crypto/crypto.service';
 import { VaultService } from '../../core/vault/vault.service';
 import { ThumbnailSyncService } from '../../core/upload/thumbnail-sync.service';
 import { HeicConverterService } from '../../core/upload/heic-converter.service';
+import { ToolbarService } from '../../shared/toolbar.service';
+import { getMimeType } from '../../core/image-types';
 
 @Component({
   selector: 'app-import-wizard',
@@ -25,7 +26,6 @@ import { HeicConverterService } from '../../core/upload/heic-converter.service';
     FormsModule,
     MatButtonModule,
     MatIconModule,
-    MatToolbarModule,
     MatProgressSpinnerModule,
     MatProgressBarModule,
     MatFormFieldModule,
@@ -34,15 +34,6 @@ import { HeicConverterService } from '../../core/upload/heic-converter.service';
     MatCardModule,
   ],
   template: `
-    <mat-toolbar color="primary">
-      <mat-icon>auto_awesome</mat-icon>
-      <span class="toolbar-title">Fotos einsortieren</span>
-      <span class="spacer"></span>
-      <button mat-icon-button (click)="skipAll()" [disabled]="processing()">
-        <mat-icon>close</mat-icon>
-      </button>
-    </mat-toolbar>
-
     <div class="wizard-container">
       @if (loading()) {
         <div class="loading">
@@ -173,13 +164,22 @@ import { HeicConverterService } from '../../core/upload/heic-converter.service';
     </div>
   `,
   styles: [`
-    .toolbar-title { margin-left: 0.5rem; font-weight: 400; }
-    .spacer { flex: 1; }
+    :host {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+    }
 
     .wizard-container {
+      display: flex;
+      flex-direction: column;
       padding: 1rem;
       max-width: 600px;
       margin: 0 auto;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
     }
 
     .loading, .done-state, .empty-state {
@@ -190,6 +190,7 @@ import { HeicConverterService } from '../../core/upload/heic-converter.service';
       padding: 3rem 1rem;
       gap: 1rem;
       text-align: center;
+      flex: 1;
     }
 
     .done-icon, .empty-icon {
@@ -200,7 +201,8 @@ import { HeicConverterService } from '../../core/upload/heic-converter.service';
     }
 
     .progress-header {
-      margin-bottom: 1rem;
+      flex-shrink: 0;
+      margin-bottom: 0.5rem;
     }
     .progress-text {
       display: block;
@@ -213,12 +215,16 @@ import { HeicConverterService } from '../../core/upload/heic-converter.service';
       display: flex;
       flex-direction: column;
       align-items: center;
-      margin-bottom: 1.5rem;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+      margin-bottom: 0.75rem;
     }
 
     .preview-image {
       max-width: 100%;
-      max-height: 300px;
+      max-height: 100%;
+      min-height: 0;
       border-radius: 12px;
       object-fit: contain;
       box-shadow: 0 2px 8px rgba(0,0,0,0.15);
@@ -226,7 +232,8 @@ import { HeicConverterService } from '../../core/upload/heic-converter.service';
 
     .preview-placeholder {
       width: 100%;
-      height: 200px;
+      flex: 1;
+      min-height: 80px;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -244,10 +251,11 @@ import { HeicConverterService } from '../../core/upload/heic-converter.service';
     }
 
     .filename {
-      margin-top: 0.5rem;
+      margin-top: 0.25rem;
       font-size: 0.85rem;
       opacity: 0.7;
       word-break: break-all;
+      flex-shrink: 0;
     }
 
     .unencrypted-badge {
@@ -269,7 +277,11 @@ import { HeicConverterService } from '../../core/upload/heic-converter.service';
 
     .album-selection h3 {
       font-weight: 400;
-      margin: 0 0 0.75rem;
+      margin: 0 0 0.5rem;
+    }
+
+    .album-selection {
+      flex-shrink: 0;
     }
 
     .album-list {
@@ -304,10 +316,16 @@ import { HeicConverterService } from '../../core/upload/heic-converter.service';
       justify-content: flex-end;
       margin-top: 1rem;
     }
+
+    .actions button mat-icon {
+      vertical-align: middle;
+      margin-right: 0.25rem;
+    }
   `]
 })
-export class ImportWizardComponent implements OnInit {
+export class ImportWizardComponent implements OnInit, OnDestroy {
   private readonly router = inject(Router);
+  private readonly toolbar = inject(ToolbarService);
   private readonly importScanService = inject(ImportScanService);
   private readonly albumService = inject(AlbumService);
   private readonly photoService = inject(PhotoService);
@@ -345,6 +363,12 @@ export class ImportWizardComponent implements OnInit {
   });
 
   async ngOnInit(): Promise<void> {
+    this.toolbar.set({
+      title: 'Fotos einsortieren',
+      backAction: () => this.skipAll(),
+      actions: [{ icon: 'close', label: 'Schließen', callback: () => this.skipAll() }],
+    });
+
     try {
       // Load albums for selection
       await this.albumService.loadAlbums();
@@ -363,9 +387,14 @@ export class ImportWizardComponent implements OnInit {
     }
   }
 
+  ngOnDestroy(): void {
+    this.toolbar.reset();
+  }
+
   /**
    * Load a preview of the current photo.
    * For encrypted files: decrypt first. For unencrypted: display directly.
+   * HEIC/HEIF files are converted to JPEG for browser display.
    */
   private async loadPreview(): Promise<void> {
     const photo = this.currentPhoto();
@@ -386,9 +415,23 @@ export class ImportWizardComponent implements OnInit {
         imageData = rawData;
       }
 
-      const blob = new Blob([imageData], { type: this.getMimeType(photo.name) });
-      // Convert HEIC to JPEG for browsers without native support
-      const displayBlob = await this.heicConverter.ensureDisplayable(blob, photo.name);
+      const mimeType = getMimeType(photo.name);
+      const blob = new Blob([imageData], { type: mimeType });
+
+      // Convert HEIC/HEIF to JPEG for browsers without native support
+      let displayBlob: Blob;
+      if (this.heicConverter.isHeic(photo.name)) {
+        try {
+          displayBlob = await this.heicConverter.convertToJpeg(blob);
+        } catch (heicErr) {
+          console.warn('[ImportWizard] HEIC conversion failed, trying raw display:', heicErr);
+          // Fallback: attempt to display the raw HEIC blob (works on Safari/iOS)
+          displayBlob = blob;
+        }
+      } else {
+        displayBlob = blob;
+      }
+
       const url = URL.createObjectURL(displayBlob);
       this.previewUrl.set(url);
     } catch (err) {
@@ -509,15 +552,5 @@ export class ImportWizardComponent implements OnInit {
     if (this.currentPhoto()) {
       this.loadPreview();
     }
-  }
-
-  private getMimeType(name: string): string {
-    const lower = name.toLowerCase();
-    if (lower.endsWith('.png')) return 'image/png';
-    if (lower.endsWith('.webp')) return 'image/webp';
-    if (lower.endsWith('.gif')) return 'image/gif';
-    if (lower.endsWith('.heic')) return 'image/heic';
-    if (lower.endsWith('.bmp')) return 'image/bmp';
-    return 'image/jpeg';
   }
 }

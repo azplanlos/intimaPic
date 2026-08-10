@@ -3,6 +3,7 @@ import { CryptoService } from '../crypto/crypto.service';
 import { VaultService } from '../vault/vault.service';
 import { BlobLruCache } from './lru-cache';
 import { HeicConverterService } from '../upload/heic-converter.service';
+import { isImageFile, getMimeType } from '../image-types';
 import type { ThumbnailSize } from '../upload/thumbnail.service';
 
 export interface PhotoItem {
@@ -189,25 +190,10 @@ export class PhotoService {
   }
 
   private isImageFile(name: string): boolean {
-    const lower = name.toLowerCase();
-    return (
-      lower.endsWith('.jpg') ||
-      lower.endsWith('.jpeg') ||
-      lower.endsWith('.png') ||
-      lower.endsWith('.webp') ||
-      lower.endsWith('.heic') ||
-      lower.endsWith('.gif') ||
-      lower.endsWith('.bmp')
-    );
+    return isImageFile(name);
   }
 
   private getMimeType(name: string): string {
-    const lower = name.toLowerCase();
-    if (lower.endsWith('.png')) return 'image/png';
-    if (lower.endsWith('.webp')) return 'image/webp';
-    if (lower.endsWith('.gif')) return 'image/gif';
-    if (lower.endsWith('.heic')) return 'image/heic';
-    if (lower.endsWith('.bmp')) return 'image/bmp';
-    return 'image/jpeg';
+    return getMimeType(name);
   }
 }
