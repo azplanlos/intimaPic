@@ -422,11 +422,12 @@ export class ImportWizardComponent implements OnInit, OnDestroy {
       let displayBlob: Blob;
       if (this.heicConverter.isHeic(photo.name)) {
         try {
-          displayBlob = await this.heicConverter.convertToJpeg(blob);
+          displayBlob = await this.heicConverter.forceConvertToJpeg(blob);
         } catch (heicErr) {
-          console.warn('[ImportWizard] HEIC conversion failed, trying raw display:', heicErr);
-          // Fallback: attempt to display the raw HEIC blob (works on Safari/iOS)
-          displayBlob = blob;
+          console.warn('[ImportWizard] HEIC conversion failed:', heicErr);
+          // Show placeholder instead of broken image
+          this.previewError.set('HEIC-Vorschau nicht verfügbar');
+          return;
         }
       } else {
         displayBlob = blob;
