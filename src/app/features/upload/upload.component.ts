@@ -6,6 +6,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatListModule } from '@angular/material/list';
 import { UploadService, type UploadProgress } from '../../core/upload/upload.service';
 import { ToolbarService } from '../../shared/toolbar.service';
+import { IMAGE_ACCEPT_STRING } from '../../core/image-types';
 
 @Component({
   selector: 'app-upload',
@@ -27,9 +28,9 @@ import { ToolbarService } from '../../shared/toolbar.service';
            (click)="fileInput.click()">
         <mat-icon class="upload-icon">cloud_upload</mat-icon>
         <p class="drop-text">Fotos hierher ziehen oder tippen zum Auswählen</p>
-        <p class="drop-hint">JPEG, PNG, HEIC, WebP</p>
+        <p class="drop-hint">JPEG, PNG, HEIC/HEIF, WebP, GIF, BMP</p>
         <input #fileInput type="file"
-               accept="image/jpeg,image/png,image/heic,image/webp"
+               [accept]="acceptTypes"
                multiple
                hidden
                (change)="onFilesSelected($event)">
@@ -185,6 +186,7 @@ export class UploadComponent implements OnInit, OnDestroy {
   isDragging = signal(false);
   albumId = signal('');
   albumName = signal('');
+  readonly acceptTypes = IMAGE_ACCEPT_STRING;
 
   ngOnInit(): void {
     this.route.queryParams.subscribe(params => {

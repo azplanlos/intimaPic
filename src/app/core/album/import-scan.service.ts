@@ -2,6 +2,7 @@ import { Injectable, inject, signal } from '@angular/core';
 import { CryptoService } from '../crypto/crypto.service';
 import { VaultService } from '../vault/vault.service';
 import { MetadataService } from '../metadata/metadata.service';
+import { isImageFile } from '../image-types';
 import type { StorageAdapter } from '../storage/storage-adapter.interface';
 import type { FileEntry } from '../crypto/crypto.models';
 
@@ -46,8 +47,6 @@ export class ImportScanService {
   readonly scanning = this._scanning.asReadonly();
 
   private readonly ROOT_DIR_ID = ''; // Cryptomator root = empty string
-
-  private readonly IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.gif', '.bmp'];
 
   /**
    * Scan the vault root for unsorted photo files.
@@ -248,8 +247,7 @@ export class ImportScanService {
   }
 
   private isImageFile(name: string): boolean {
-    const lower = name.toLowerCase();
-    return this.IMAGE_EXTENSIONS.some(ext => lower.endsWith(ext));
+    return isImageFile(name);
   }
 
   /**
