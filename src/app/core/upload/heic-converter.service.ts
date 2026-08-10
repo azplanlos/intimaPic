@@ -1,12 +1,12 @@
 import { Injectable } from '@angular/core';
-import heic2any from 'heic2any';
+import { heicTo } from 'heic-to';
 
 /**
  * Service to convert HEIC/HEIF images to JPEG for browsers that don't
  * natively support HEIC (e.g. Chromium-based browsers, Firefox).
  *
- * Uses heic2any under the hood. Checks native browser support first
- * and skips conversion if the browser can handle HEIC directly (Safari).
+ * Uses heic-to (libheif 1.22+) under the hood which supports all modern
+ * iPhone HEIC formats including those from iOS 18.
  */
 @Injectable({ providedIn: 'root' })
 export class HeicConverterService {
@@ -39,14 +39,7 @@ export class HeicConverterService {
       return blob;
     }
 
-    const result = await heic2any({
-      blob,
-      toType: 'image/jpeg',
-      quality,
-    });
-
-    // heic2any returns Blob | Blob[] depending on multi-image HEIC files
-    return Array.isArray(result) ? result[0] : result;
+    return this.doConvert(blob, quality);
   }
 
   /**
@@ -59,13 +52,7 @@ export class HeicConverterService {
    * @returns A JPEG blob
    */
   async forceConvertToJpeg(blob: Blob, quality = 0.92): Promise<Blob> {
-    const result = await heic2any({
-      blob,
-      toType: 'image/jpeg',
-      quality,
-    });
-
-    return Array.isArray(result) ? result[0] : result;
+    return this.doConvert(blob, quality);
   }
 
   /**
@@ -81,6 +68,17 @@ export class HeicConverterService {
       return blob;
     }
     return this.convertToJpeg(blob, quality);
+  }
+
+  /**
+   * Perform the actual HEIC → JPEG conversion via heic-to (libheif).
+   */
+  private async doConvert(blob: Blob, quality: number): Promise<Blob> {
+    return heicTo({
+      blob,
+      type: 'image/jpeg',
+      quality,
+    });
   }
 
   /**
