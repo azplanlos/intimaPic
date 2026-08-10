@@ -50,6 +50,25 @@ export class HeicConverterService {
   }
 
   /**
+   * Always convert HEIC to JPEG, bypassing the native support check.
+   * Use this when the result must be displayable in an <img> tag on all browsers,
+   * e.g. for preview thumbnails where a broken image is unacceptable.
+   *
+   * @param blob - The HEIC image blob
+   * @param quality - JPEG quality (0-1), defaults to 0.92
+   * @returns A JPEG blob
+   */
+  async forceConvertToJpeg(blob: Blob, quality = 0.92): Promise<Blob> {
+    const result = await heic2any({
+      blob,
+      toType: 'image/jpeg',
+      quality,
+    });
+
+    return Array.isArray(result) ? result[0] : result;
+  }
+
+  /**
    * Ensure a blob is browser-displayable: if it's HEIC and the browser
    * doesn't support it natively, convert to JPEG. Otherwise return as-is.
    *
