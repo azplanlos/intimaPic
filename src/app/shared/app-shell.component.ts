@@ -102,7 +102,7 @@ import { ToolbarService } from './toolbar.service';
     }
 
     .shell-content {
-      flex: 1;
+      flex: 1 1 0;
       overflow-y: auto;
     }
 

@@ -167,7 +167,7 @@ import { getMimeType } from '../../core/image-types';
     :host {
       display: flex;
       flex-direction: column;
-      height: calc(100dvh - 64px);
+      height: 100%;
       overflow: hidden;
     }
 
