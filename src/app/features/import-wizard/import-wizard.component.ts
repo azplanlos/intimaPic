@@ -167,7 +167,7 @@ import { getMimeType } from '../../core/image-types';
     :host {
       display: flex;
       flex-direction: column;
-      height: 100%;
+      height: calc(100dvh - 64px);
       overflow: hidden;
     }
 
@@ -178,7 +178,8 @@ import { getMimeType } from '../../core/image-types';
       max-width: 600px;
       margin: 0 auto;
       width: 100%;
-      height: 100%;
+      flex: 1;
+      min-height: 0;
       overflow: hidden;
     }
 
@@ -285,16 +286,16 @@ import { getMimeType } from '../../core/image-types';
     }
 
     .album-list {
-      max-height: 200px;
+      max-height: 150px;
       overflow-y: auto;
       border-radius: 8px;
       border: 1px solid color-mix(in srgb, var(--mat-sys-outline) 30%, transparent);
-      margin-bottom: 1rem;
+      margin-bottom: 0.5rem;
     }
 
     .new-album-btn {
       width: 100%;
-      margin-bottom: 1rem;
+      margin-bottom: 0.5rem;
     }
 
     .new-album-form {
@@ -314,7 +315,7 @@ import { getMimeType } from '../../core/image-types';
       display: flex;
       gap: 0.75rem;
       justify-content: flex-end;
-      margin-top: 1rem;
+      margin-top: 0.5rem;
     }
 
     .actions button mat-icon {
@@ -422,11 +423,12 @@ export class ImportWizardComponent implements OnInit, OnDestroy {
       let displayBlob: Blob;
       if (this.heicConverter.isHeic(photo.name)) {
         try {
-          displayBlob = await this.heicConverter.convertToJpeg(blob);
+          displayBlob = await this.heicConverter.forceConvertToJpeg(blob);
         } catch (heicErr) {
-          console.warn('[ImportWizard] HEIC conversion failed, trying raw display:', heicErr);
-          // Fallback: attempt to display the raw HEIC blob (works on Safari/iOS)
-          displayBlob = blob;
+          console.warn('[ImportWizard] HEIC conversion failed:', heicErr);
+          // Show placeholder instead of broken image
+          this.previewError.set('HEIC-Vorschau nicht verfügbar');
+          return;
         }
       } else {
         displayBlob = blob;
