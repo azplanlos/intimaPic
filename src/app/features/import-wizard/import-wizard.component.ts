@@ -136,6 +136,14 @@ import { getMimeType } from '../../core/image-types';
           <!-- Action buttons -->
           <div class="actions">
             <button mat-button
+                    color="warn"
+                    (click)="deletePhoto()"
+                    [disabled]="processing()">
+              <mat-icon>delete</mat-icon>
+              Löschen
+            </button>
+            <span class="spacer"></span>
+            <button mat-button
                     (click)="skipPhoto()"
                     [disabled]="processing()">
               Überspringen
@@ -318,8 +326,12 @@ import { getMimeType } from '../../core/image-types';
     .actions {
       display: flex;
       gap: 0.75rem;
-      justify-content: flex-end;
+      align-items: center;
       margin-top: 0.5rem;
+    }
+
+    .actions .spacer {
+      flex: 1;
     }
 
     .actions button mat-icon {
@@ -532,6 +544,48 @@ export class ImportWizardComponent implements OnInit, OnDestroy {
    */
   skipAll(): void {
     this.finish();
+  }
+
+  /**
+   * Delete the current photo permanently from storage.
+   */
+  async deletePhoto(): Promise<void> {
+    const photo = this.currentPhoto();
+    if (!photo) return;
+
+    this.processing.set(true);
+    try {
+      const storage = this.vaultService.getStorage();
+      await storage.deleteFile(photo.storagePath);
+
+      // Remove from the service's unsorted list
+      this.importScanService.removeFromUnsorted(photo.storagePath);
+
+      // Revoke preview URL
+      const url = this.previewUrl();
+      if (url) URL.revokeObjectURL(url);
+
+      this.selectedAlbum.set(null);
+      this.showNewAlbumForm.set(false);
+      this.previewError.set(null);
+
+      this.processedCount.update(c => c + 1);
+
+      // Reload remaining photos (deleted photo is already removed from service)
+      const remaining = this.importScanService.unsortedPhotos()
+        .filter(p => !this.skippedPaths.has(p.storagePath));
+      this.unsortedPhotos.set(remaining);
+      this.currentIndex.set(0);
+
+      // Load next preview
+      if (this.currentPhoto()) {
+        await this.loadPreview();
+      }
+    } catch (err) {
+      console.error('[ImportWizard] Delete failed:', err);
+    } finally {
+      this.processing.set(false);
+    }
   }
 
   /**

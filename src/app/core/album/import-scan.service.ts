@@ -240,6 +240,16 @@ export class ImportScanService {
   }
 
   /**
+   * Remove a photo from the unsorted list by storage path.
+   * Used when a photo is deleted directly without moving to an album.
+   */
+  removeFromUnsorted(storagePath: string): void {
+    this._unsortedPhotos.update(photos =>
+      photos.filter(p => p.storagePath !== storagePath)
+    );
+  }
+
+  /**
    * Clear the unsorted photos state.
    */
   clear(): void {
