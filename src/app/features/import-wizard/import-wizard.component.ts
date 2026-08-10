@@ -44,7 +44,11 @@ import { getMimeType } from '../../core/image-types';
         <div class="done-state">
           <mat-icon class="done-icon">check_circle</mat-icon>
           <h2>Alle Fotos einsortiert!</h2>
-          <p>{{ processedCount() }} Fotos wurden in Alben verschoben.</p>
+          <p>{{ processedCount() }} Fotos wurden in Alben verschoben.
+            @if (skippedCount() > 0) {
+              {{ skippedCount() }} übersprungen.
+            }
+          </p>
           <button mat-raised-button color="primary" (click)="finish()">
             <mat-icon>photo_library</mat-icon>
             Zur Galerie
@@ -54,7 +58,7 @@ import { getMimeType } from '../../core/image-types';
         <!-- Progress indicator -->
         <div class="progress-header">
           <span class="progress-text">
-            Foto {{ processedCount() + 1 }} von {{ totalPhotos() }}
+            Foto {{ processedCount() + skippedCount() + 1 }} von {{ totalPhotos() }}
           </span>
           <mat-progress-bar
             mode="determinate"
@@ -344,9 +348,11 @@ export class ImportWizardComponent implements OnInit, OnDestroy {
   readonly selectedAlbum = signal<Album | null>(null);
   readonly showNewAlbumForm = signal(false);
   readonly processedCount = signal(0);
+  readonly skippedCount = signal(0);
   newAlbumName = '';
 
   private unsortedPhotos = signal<UnsortedPhoto[]>([]);
+  private readonly skippedPaths = new Set<string>();
 
   readonly totalPhotos = signal(0);
   readonly currentPhoto = computed(() => {
@@ -355,12 +361,12 @@ export class ImportWizardComponent implements OnInit, OnDestroy {
     return idx < photos.length ? photos[idx] : null;
   });
   readonly allDone = computed(() =>
-    !this.loading() && this.processedCount() > 0 && !this.currentPhoto()
+    !this.loading() && (this.processedCount() > 0 || this.skippedCount() > 0) && !this.currentPhoto()
   );
   readonly progressPercent = computed(() => {
     const total = this.totalPhotos();
     if (total === 0) return 0;
-    return Math.round((this.processedCount() / total) * 100);
+    return Math.round(((this.processedCount() + this.skippedCount()) / total) * 100);
   });
 
   async ngOnInit(): Promise<void> {
@@ -495,6 +501,9 @@ export class ImportWizardComponent implements OnInit, OnDestroy {
    * Skip the current photo (leave in root).
    */
   skipPhoto(): void {
+    const photo = this.currentPhoto();
+    if (!photo) return;
+
     // Revoke old preview URL
     const url = this.previewUrl();
     if (url) URL.revokeObjectURL(url);
@@ -503,8 +512,14 @@ export class ImportWizardComponent implements OnInit, OnDestroy {
     this.showNewAlbumForm.set(false);
     this.previewError.set(null);
 
-    // Photo stays in array, so advance past it
-    this.currentIndex.update(i => i + 1);
+    // Track as skipped and remove from local array
+    this.skippedPaths.add(photo.storagePath);
+    this.skippedCount.update(c => c + 1);
+    this.unsortedPhotos.update(photos =>
+      photos.filter(p => p.storagePath !== photo.storagePath)
+    );
+    // Index stays at current position (next photo slides into this slot)
+    // or falls off the end if this was the last one
 
     // Load next preview
     if (this.currentPhoto()) {
@@ -542,13 +557,12 @@ export class ImportWizardComponent implements OnInit, OnDestroy {
     this.showNewAlbumForm.set(false);
     this.previewError.set(null);
 
-    // Re-read the (now smaller) array from the service signal.
-    // The moved photo was already removed, so index 0 is the next photo.
-    this.unsortedPhotos.set(this.importScanService.unsortedPhotos());
+    // Re-read the (now smaller) array from the service signal,
+    // filtering out any previously skipped photos.
+    const remaining = this.importScanService.unsortedPhotos()
+      .filter(p => !this.skippedPaths.has(p.storagePath));
+    this.unsortedPhotos.set(remaining);
     this.currentIndex.set(0);
-
-    // Update totalPhotos to stay consistent: processed + remaining
-    this.totalPhotos.set(this.processedCount() + this.unsortedPhotos().length);
 
     // Load next preview
     if (this.currentPhoto()) {
