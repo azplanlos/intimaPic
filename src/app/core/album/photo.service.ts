@@ -139,7 +139,20 @@ export class PhotoService {
         throw err;
       }
 
-      // Any SW error → fall back to direct storage
+      // Only fall back to direct storage for unrecoverable SW errors.
+      // TOKEN_EXPIRED and NEED_KEYS are handled internally by sendCommand
+      // (auto-refresh/re-transfer + retry). If we reach here with those codes,
+      // the retry already failed – fall back to direct.
+      if (err instanceof SwError && err.code === 'SW_NOT_READY') {
+        return this.decryptThumbnailDirect(photo, directoryId, size, signal);
+      }
+
+      // FILE_NOT_FOUND: thumbnail doesn't exist in storage
+      if (err instanceof SwError && err.code === 'FILE_NOT_FOUND') {
+        return this.decryptThumbnailDirect(photo, directoryId, size, signal);
+      }
+
+      // Other SW errors (TOKEN_EXPIRED after retry failed, OFFLINE, etc.)
       if (err instanceof SwError) {
         return this.decryptThumbnailDirect(photo, directoryId, size, signal);
       }
