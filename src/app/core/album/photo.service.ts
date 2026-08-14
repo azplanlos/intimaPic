@@ -1,5 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { CryptoService } from '../crypto/crypto.service';
+import { VaultService } from '../vault/vault.service';
 import { SwClientService, SwError } from '../sw-client/sw-client.service';
 import { BlobLruCache } from './lru-cache';
 import { HeicConverterService } from '../upload/heic-converter.service';
@@ -41,6 +42,7 @@ export interface PhotoItem {
 @Injectable({ providedIn: 'root' })
 export class PhotoService {
   private readonly crypto = inject(CryptoService);
+  private readonly vaultService = inject(VaultService);
   private readonly swClient = inject(SwClientService);
   private readonly heicConverter = inject(HeicConverterService);
 
@@ -52,21 +54,65 @@ export class PhotoService {
   /**
    * List all photos in an album (by directory ID).
    * Uses the ServiceWorker for cached/network directory listing + filename decryption.
+   * Falls back to direct storage access if SW is unavailable.
    * Returns items with decrypted names and existing in-memory blob URLs.
    */
   async listPhotos(directoryId: string, forceRefresh = false): Promise<PhotoItem[]> {
-    const { photos: entries } = await this.swClient.listPhotos(directoryId, forceRefresh);
+    try {
+      const { photos: entries } = await this.swClient.listPhotos(directoryId, forceRefresh);
 
-    return entries.map(entry => ({
-      encryptedName: entry.encryptedName,
-      name: entry.name,
-      storagePath: entry.storagePath,
-      thumbnailUrl: this.thumbnailCache.get(`grid:${entry.encryptedName}`) || null,
-      previewUrl: this.thumbnailCache.get(`preview:${entry.encryptedName}`) || null,
-      fullResUrl: this.fullResCache.get(`full:${entry.encryptedName}`) || null,
-      loading: false,
-      size: entry.size,
-    }));
+      return entries.map(entry => ({
+        encryptedName: entry.encryptedName,
+        name: entry.name,
+        storagePath: entry.storagePath,
+        thumbnailUrl: this.thumbnailCache.get(`grid:${entry.encryptedName}`) || null,
+        previewUrl: this.thumbnailCache.get(`preview:${entry.encryptedName}`) || null,
+        fullResUrl: this.fullResCache.get(`full:${entry.encryptedName}`) || null,
+        loading: false,
+        size: entry.size,
+      }));
+    } catch (err) {
+      // Fall back to direct storage when SW is unavailable
+      if (err instanceof SwError) {
+        return this.listPhotosDirect(directoryId);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Fallback: List photos directly via storage adapter.
+   */
+  private async listPhotosDirect(directoryId: string): Promise<PhotoItem[]> {
+    const storage = this.vaultService.getStorage();
+    const dirPath = await this.crypto.encryptDirectoryId(directoryId);
+    const entries = await storage.listFiles(dirPath);
+
+    const photos: PhotoItem[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isDirectory && entry.encryptedName.endsWith('.c9r')) {
+        try {
+          const name = await this.crypto.decryptFilename(entry.encryptedName, directoryId);
+          if (isImageFile(name)) {
+            photos.push({
+              encryptedName: entry.encryptedName,
+              name,
+              storagePath: `${dirPath}/${entry.encryptedName}`,
+              thumbnailUrl: this.thumbnailCache.get(`grid:${entry.encryptedName}`) || null,
+              previewUrl: this.thumbnailCache.get(`preview:${entry.encryptedName}`) || null,
+              fullResUrl: this.fullResCache.get(`full:${entry.encryptedName}`) || null,
+              loading: false,
+              size: entry.size,
+            });
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    return photos;
   }
 
   /**
@@ -110,12 +156,38 @@ export class PhotoService {
         throw err;
       }
 
-      // Thumbnail not found in SW (FILE_NOT_FOUND) → fall back to original
-      if (err instanceof SwError && (err.code === 'FILE_NOT_FOUND' || err.code === 'OFFLINE')) {
-        return this.decryptOriginal(photo, signal);
+      // SW not ready or thumbnail not found → fall back to direct storage
+      if (err instanceof SwError) {
+        return this.decryptThumbnailDirect(photo, directoryId, size, signal);
       }
 
       throw err;
+    }
+  }
+
+  /**
+   * Fallback: Load and decrypt thumbnail directly via storage adapter.
+   */
+  private async decryptThumbnailDirect(photo: PhotoItem, directoryId: string, size: ThumbnailSize, signal?: AbortSignal): Promise<string> {
+    const cacheKey = `${size}:${photo.encryptedName}`;
+    const storage = this.vaultService.getStorage();
+    const thumbDirId = directoryId || '_root';
+    const baseName = photo.encryptedName.slice(0, -4);
+    const thumbPath = `_intimapic/thumbs/${thumbDirId}/${baseName}.${size}`;
+
+    try {
+      const encryptedData = await storage.readFile(thumbPath, signal);
+      const decryptedData = await this.crypto.decryptFile(encryptedData);
+      const blob = new Blob([decryptedData], { type: 'image/jpeg' });
+      const url = URL.createObjectURL(blob);
+      this.thumbnailCache.set(cacheKey, url);
+      return url;
+    } catch (innerErr) {
+      if (innerErr instanceof DOMException && innerErr.name === 'AbortError') {
+        throw innerErr;
+      }
+      // Thumbnail doesn't exist → fall back to original
+      return this.decryptOriginal(photo, signal);
     }
   }
 
@@ -142,8 +214,20 @@ export class PhotoService {
     const cached = this.fullResCache.get(cacheKey);
     if (cached) return cached;
 
-    // Read encrypted original via SW (no SW caching for originals – too large)
-    const encryptedData = await this.swClient.getFile(photo.storagePath);
+    let encryptedData: ArrayBuffer;
+
+    try {
+      // Try via SW first (benefits from throttling, error handling)
+      encryptedData = await this.swClient.getFile(photo.storagePath);
+    } catch (err) {
+      // SW not ready → fall back to direct storage
+      if (err instanceof SwError) {
+        const storage = this.vaultService.getStorage();
+        encryptedData = await storage.readFile(photo.storagePath, signal);
+      } else {
+        throw err;
+      }
+    }
 
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
