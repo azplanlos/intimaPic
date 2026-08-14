@@ -37,6 +37,7 @@ export class AlbumService {
   /**
    * Load all albums from the root directory.
    * Uses the ServiceWorker for cached/network access + filename decryption.
+   * Falls back to direct storage access if SW is not ready or fails.
    */
   async loadAlbums(forceRefresh = false): Promise<Album[]> {
     try {
@@ -53,8 +54,12 @@ export class AlbumService {
       this._albums.set(albums);
       return albums;
     } catch (err) {
-      // If SW is not ready or keys not set, fall back to direct access
-      if (err instanceof SwError && err.code === 'SW_NOT_READY') {
+      // Fall back to direct storage access when SW is unavailable:
+      // - SW_NOT_READY: SW not yet installed/activated (first visit)
+      // - KEYS_NOT_SET: SW active but hasn't received keys yet
+      // - TOKEN_EXPIRED: SW has keys but no storage token yet
+      // - TIMEOUT: SW not responding
+      if (err instanceof SwError) {
         return this.loadAlbumsDirect();
       }
       throw err;
