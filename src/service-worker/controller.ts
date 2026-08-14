@@ -577,26 +577,42 @@ function ensureStorage(port: MessagePort): boolean {
 
 /**
  * Decrypt album entries: filters directories, reads dir.c9r, decrypts names.
+ * Uses a persistent directory-ID cache to avoid redundant dir.c9r reads.
+ * On first load: reads dir.c9r from network and caches the result.
+ * On subsequent loads (including offline): reads from cache.
  */
 async function decryptAlbumList(entries: Array<{ encryptedName: string; isDirectory: boolean; path: string; size: number; lastModified: string }>): Promise<import('./models/responses').CachedAlbum[]> {
   const albums: import('./models/responses').CachedAlbum[] = [];
+  const vaultId = currentVaultId ?? '';
+
+  // Pre-load all cached directory IDs for this vault (single IDB read)
+  const cachedDirIds = await cacheManager.getAllDirectoryIds(vaultId);
+
+  // Compute root path once (not per-iteration)
+  const rootPath = await directoryIdCrypto.encryptDirectoryId('');
 
   for (const entry of entries) {
     if (!entry.isDirectory || !entry.encryptedName.endsWith('.c9r')) continue;
 
     try {
-      // Read dir.c9r to get directory ID
-      const rootPath = await directoryIdCrypto.encryptDirectoryId('');
-      const dirIdPath = `${rootPath}/${entry.encryptedName}/dir.c9r`;
+      let directoryId: string;
 
-      let dirIdData: ArrayBuffer;
-      if (storageAdapter) {
-        dirIdData = await storageAdapter.readFile(dirIdPath);
+      // Check directory-ID cache first
+      const cached = cachedDirIds.get(entry.encryptedName);
+      if (cached) {
+        directoryId = cached;
       } else {
-        continue; // Can't read dir.c9r without storage
+        // Cache miss: read dir.c9r from storage
+        const dirIdPath = `${rootPath}/${entry.encryptedName}/dir.c9r`;
+
+        if (!storageAdapter) continue;
+        const dirIdData = await storageAdapter.readFile(dirIdPath);
+        directoryId = new TextDecoder().decode(dirIdData).trim();
+
+        // Cache for future use (persistent, survives SW restarts)
+        await cacheManager.putDirectoryId(vaultId, entry.encryptedName, directoryId);
       }
 
-      const directoryId = new TextDecoder().decode(dirIdData).trim();
       const name = await filenameCrypto.decryptFilename(entry.encryptedName, '');
       const storagePath = await directoryIdCrypto.encryptDirectoryId(directoryId);
 
