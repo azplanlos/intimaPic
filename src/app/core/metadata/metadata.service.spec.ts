@@ -146,7 +146,7 @@ describe('MetadataService', () => {
   });
 
   describe('teardown', () => {
-    it('should flush to cloud, clear cache and store', async () => {
+    it('should flush to cloud and clear in-memory cache', async () => {
       // Initialize first to populate state
       storeMock.open.and.resolveTo();
       storeMock.getAll.and.resolveTo([makeRecord('photo1', 100)]);
@@ -158,16 +158,16 @@ describe('MetadataService', () => {
       storeMock.getAll.and.resolveTo([makeRecord('photo1', 100)]);
       cryptoMock.encryptFile.and.resolveTo(new ArrayBuffer(20));
       storageMock.writeFile.and.resolveTo();
-      storeMock.clear.and.resolveTo();
 
       await service.teardown();
 
       expect(cryptoMock.encryptFile).toHaveBeenCalled();
       expect(storageMock.writeFile).toHaveBeenCalledWith('_intimapic/metadata.enc', jasmine.any(ArrayBuffer));
-      expect(storeMock.clear).toHaveBeenCalled();
+      // store.clear() is NOT called – metadata persists in IndexedDB across sessions
+      expect(storeMock.clear).not.toHaveBeenCalled();
     });
 
-    it('should handle flush failure gracefully and still clear store', async () => {
+    it('should handle flush failure gracefully', async () => {
       storeMock.open.and.resolveTo();
       storeMock.getAll.and.resolveTo([makeRecord('photo1', 100)]);
       storageMock.fileExists.and.resolveTo(false);
@@ -175,11 +175,9 @@ describe('MetadataService', () => {
       await service.initialize();
 
       storeMock.getAll.and.rejectWith(new Error('DB error'));
-      storeMock.clear.and.resolveTo();
 
-      await service.teardown();
-
-      expect(storeMock.clear).toHaveBeenCalled();
+      // Should not throw even if flush fails
+      await expectAsync(service.teardown()).toBeResolved();
     });
   });
 
