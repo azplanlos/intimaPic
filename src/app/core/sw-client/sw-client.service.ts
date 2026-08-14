@@ -407,7 +407,7 @@ export class SwClientService {
   }
 
   /**
-   * Automatically transfer keys when a new SW controller becomes active.
+   * Automatically transfer keys AND token when a new SW controller becomes active.
    * This handles the case where the SW installs and claims while the page is open.
    */
   private async transferKeysToNewController(): Promise<void> {
@@ -427,8 +427,21 @@ export class SwClientService {
         macKey: keys.macKey,
         vaultId,
       });
+
+      // Also transfer token so the SW can immediately handle storage requests
+      if (this.tokenProvider) {
+        const tokenResult = await this.tokenProvider.refreshToken('onedrive');
+        if (tokenResult) {
+          await this.postMessage(sw, {
+            type: 'SET_AUTH_TOKEN',
+            provider: 'onedrive',
+            token: tokenResult.token,
+            expiresAt: tokenResult.expiresAt,
+          });
+        }
+      }
     } catch {
-      // Non-critical – NEED_KEYS will handle it on next request
+      // Non-critical – NEED_KEYS/NEED_TOKEN will handle it on next request
     }
   }
 
