@@ -135,6 +135,13 @@ export class OneDriveAdapter implements StorageAdapter {
   private accessToken: string | null = null;
   private connected = false;
 
+  /**
+   * Get the current access token (for transferring to ServiceWorker).
+   */
+  getAccessToken(): string | null {
+    return this.accessToken;
+  }
+
   private readonly GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
   private readonly SCOPES = ['Files.ReadWrite.AppFolder', 'Files.ReadWrite'];
 
