@@ -42,6 +42,13 @@ export class S3Adapter implements StorageAdapter {
   private authToken: string | null = null;
 
   /**
+   * Get the current auth token (for transferring to ServiceWorker).
+   */
+  getAuthToken(): string | null {
+    return this.authToken;
+  }
+
+  /**
    * Configure the adapter with S3/Lambda-specific settings.
    */
   configure(config: S3Config, rootPath?: string): void {

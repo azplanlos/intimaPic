@@ -397,6 +397,39 @@ export class SwClientService {
           break;
       }
     });
+
+    // When a new SW takes over via clients.claim(), automatically
+    // re-transfer keys so it can start handling requests immediately.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      this._ready.set(true);
+      this.transferKeysToNewController();
+    });
+  }
+
+  /**
+   * Automatically transfer keys when a new SW controller becomes active.
+   * This handles the case where the SW installs and claims while the page is open.
+   */
+  private async transferKeysToNewController(): Promise<void> {
+    if (!this.keyProvider) return;
+
+    const keys = this.keyProvider.getMasterKeys();
+    const vaultId = this.keyProvider.getVaultId();
+    if (!keys || !vaultId) return;
+
+    const sw = navigator.serviceWorker?.controller;
+    if (!sw) return;
+
+    try {
+      await this.postMessage(sw, {
+        type: 'INIT_KEYS',
+        encryptionKey: keys.encryptionKey,
+        macKey: keys.macKey,
+        vaultId,
+      });
+    } catch {
+      // Non-critical – NEED_KEYS will handle it on next request
+    }
   }
 
   // ─── SW Registration ───────────────────────────────────────────────────────

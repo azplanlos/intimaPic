@@ -273,6 +273,27 @@ export class VaultService {
           getMasterKeys: () => this.cryptoService.getMasterKeys(),
           getVaultId: () => this.registry.activeVault()?.id ?? null,
         });
+
+        // Register token provider for SW token refresh requests
+        this.swClient.setTokenProvider({
+          refreshToken: async (provider: 'onedrive' | 's3') => {
+            try {
+              const vault = this.registry.activeVault();
+              if (!vault) return null;
+              await this.transferAuthTokenToSw(vault.storageSettings);
+              // Return the token we just transferred
+              if (provider === 'onedrive') {
+                const { OneDriveAdapter } = await import('../storage/onedrive-adapter.service');
+                const adapter = this.injector.get(OneDriveAdapter);
+                const t = adapter.getAccessToken();
+                return t ? { token: t, expiresAt: Date.now() + 3600_000 } : null;
+              }
+              return null;
+            } catch {
+              return null;
+            }
+          },
+        });
       }
 
       // Transfer auth token to SW (if online and using OneDrive/S3)
@@ -304,25 +325,37 @@ export class VaultService {
 
   /**
    * Transfer the current auth token to the ServiceWorker.
+   * Reads the token directly from the active storage adapter instance
+   * (tokens are acquired via MSAL/Cognito and not stored in settings).
    */
   private async transferAuthTokenToSw(settings: StorageSettings): Promise<void> {
     try {
       const provider = settings.provider;
       if (provider === 'icloud') return; // iCloud doesn't use SW storage
 
-      // Extract token from the active adapter or settings
-      const config = settings.config as Record<string, unknown>;
-      const token = (config?.['accessToken'] as string) ?? '';
+      // Get token from the active adapter (where MSAL stores it after auth)
+      let token: string | null = null;
+
+      if (provider === 'onedrive') {
+        const { OneDriveAdapter } = await import('../storage/onedrive-adapter.service');
+        const adapter = this.injector.get(OneDriveAdapter);
+        token = adapter.getAccessToken();
+      } else if (provider === 's3') {
+        const { S3Adapter } = await import('../storage/s3-adapter.service');
+        const adapter = this.injector.get(S3Adapter);
+        token = adapter.getAuthToken();
+      }
+
       if (!token) return;
 
       await this.swClient.setAuthToken(
         provider,
         token,
         Date.now() + 3600 * 1000, // 1 hour default
-        { rootPath: settings.rootPath, ...config }
+        { rootPath: settings.rootPath }
       );
     } catch {
-      // Non-critical
+      // Non-critical: fallback to direct storage will handle requests
     }
   }
 
