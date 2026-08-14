@@ -40,8 +40,17 @@ jobs:
           sed -i "s|__AZURE_CLIENT_ID__|${{ secrets.AZURE_CLIENT_ID }}|g" src/environments/environment.prod.ts
           sed -i "s|__AZURE_TENANT_ID__|${{ secrets.AZURE_TENANT_ID }}|g" src/environments/environment.prod.ts
 
-      - name: Build for production
+      - name: Build Angular app for production
         run: npx ng build --configuration=production --base-href /intimaPic/ --output-path dist/app
+
+      - name: Build ServiceWorker
+        run: node build-sw.mjs
+        env:
+          # Override output path to match Angular's output
+          SW_OUTPUT_DIR: dist/app/browser
+
+      - name: Verify ServiceWorker exists
+        run: test -f dist/app/browser/sw.js && echo "✅ sw.js exists ($(wc -c < dist/app/browser/sw.js) bytes)" || (echo "❌ sw.js missing!" && exit 1)
 
       - name: Copy index.html to 404.html (SPA routing)
         run: cp dist/app/browser/index.html dist/app/browser/404.html

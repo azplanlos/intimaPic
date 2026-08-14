@@ -6,8 +6,16 @@ import { ICloudDriveAdapter } from './icloud-drive-adapter.service';
 import type { StorageProviderType, StorageSettings, OneDriveConfig, S3Config, ICloudConfig } from '../crypto/crypto.models';
 
 /**
- * Factory service that creates and manages StorageAdapter instances
- * based on the user's configured provider.
+ * Factory service that creates and manages StorageAdapter instances.
+ *
+ * POST-MIGRATION NOTE:
+ * After the ServiceWorker migration, this factory is only used for:
+ * 1. Vault creation (initial setup – writes masterkey.cryptomator etc.)
+ * 2. Vault connection verification (connectExistingVault)
+ * 3. iCloud Drive access (File System Access API is not available in SW)
+ *
+ * For regular read/write operations during normal usage, the ServiceWorker
+ * handles all storage access directly. See SwClientService.
  */
 @Injectable({ providedIn: 'root' })
 export class StorageAdapterFactory {
@@ -35,11 +43,11 @@ export class StorageAdapterFactory {
 
   /**
    * Configure and connect an adapter based on StorageSettings.
+   * Used during vault creation and initial connection verification.
    */
   async connectAdapter(settings: StorageSettings): Promise<StorageAdapter> {
     const adapter = this.getAdapter(settings.provider);
 
-    // Configure the adapter with provider-specific settings
     switch (settings.provider) {
       case 'onedrive':
         (adapter as OneDriveAdapter).configure(settings.config as OneDriveConfig, settings.rootPath);
@@ -59,6 +67,7 @@ export class StorageAdapterFactory {
 
   /**
    * Get the currently active (connected) adapter.
+   * Primarily used for iCloud Drive (which stays in the main thread).
    */
   getActiveAdapter(): StorageAdapter | null {
     return this.activeAdapter;

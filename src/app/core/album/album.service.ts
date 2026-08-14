@@ -1,7 +1,7 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { CryptoService } from '../crypto/crypto.service';
 import { VaultService } from '../vault/vault.service';
-import type { StorageAdapter } from '../storage/storage-adapter.interface';
+import { SwClientService, SwError } from '../sw-client/sw-client.service';
 
 export interface Album {
   /** Cleartext album name */
@@ -17,24 +17,17 @@ export interface Album {
 /**
  * Service for managing photo albums (Cryptomator directories).
  *
- * In Cryptomator's format, a subdirectory is represented by:
- * 1. A folder with the encrypted name + .c9r extension in the parent directory
- * 2. Inside that folder, a file called "dir.c9r" containing the directory ID
- * 3. The actual content lives at d/<hash of encrypted dirId>/
+ * Album listing is now delegated to the ServiceWorker which handles
+ * caching, network access, and filename decryption. The SW returns
+ * already-decrypted album names.
  *
- * Example:
- *   d/AB/ROOT_HASH/
- *     ├── encryptedAlbumName.c9r/    ← folder marker
- *     │   └── dir.c9r                ← contains the directory ID (UUID)
- *     ...
- *   d/CD/ALBUM_HASH/                 ← actual album content
- *     ├── encryptedPhoto1.c9r        ← photos in this album
- *     └── encryptedPhoto2.c9r
+ * Write operations (create/delete) still use the SW for storage access.
  */
 @Injectable({ providedIn: 'root' })
 export class AlbumService {
   private readonly crypto = inject(CryptoService);
   private readonly vaultService = inject(VaultService);
+  private readonly swClient = inject(SwClientService);
 
   private readonly _albums = signal<Album[]>([]);
   readonly albums = this._albums.asReadonly();
@@ -43,34 +36,52 @@ export class AlbumService {
 
   /**
    * Load all albums from the root directory.
+   * Uses the ServiceWorker for cached/network access + filename decryption.
    */
-  async loadAlbums(): Promise<Album[]> {
+  async loadAlbums(forceRefresh = false): Promise<Album[]> {
+    try {
+      const { albums: cachedAlbums } = await this.swClient.listAlbums(forceRefresh);
+
+      // Map SW response to local Album interface
+      const albums: Album[] = cachedAlbums.map(a => ({
+        name: a.name,
+        directoryId: a.directoryId,
+        storagePath: a.storagePath,
+        encryptedName: a.encryptedName,
+      }));
+
+      this._albums.set(albums);
+      return albums;
+    } catch (err) {
+      // If SW is not ready or keys not set, fall back to direct access
+      if (err instanceof SwError && err.code === 'SW_NOT_READY') {
+        return this.loadAlbumsDirect();
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Fallback: Load albums directly via storage adapter (used during initial setup
+   * or when SW is not yet registered).
+   */
+  private async loadAlbumsDirect(): Promise<Album[]> {
     const storage = this.vaultService.getStorage();
-
-    // Get the storage path for the root directory
     const rootPath = await this.crypto.encryptDirectoryId(this.ROOT_DIR_ID);
-
-    // List all entries in root
     const entries = await storage.listFiles(rootPath);
 
     const albums: Album[] = [];
 
     for (const entry of entries) {
-      // Directories in Cryptomator are .c9r folders containing a dir.c9r file
       if (entry.isDirectory && entry.encryptedName.endsWith('.c9r')) {
         try {
-          // Read the dir.c9r file inside this folder to get the directory ID
           const dirIdPath = `${rootPath}/${entry.encryptedName}/dir.c9r`;
           const dirIdData = await storage.readFile(dirIdPath);
           const directoryId = new TextDecoder().decode(dirIdData).trim();
-
-          // Decrypt the folder name
           const decryptedName = await this.crypto.decryptFilename(
             entry.encryptedName,
             this.ROOT_DIR_ID
           );
-
-          // Compute the storage path for this album's content
           const storagePath = await this.crypto.encryptDirectoryId(directoryId);
 
           albums.push({
@@ -80,7 +91,6 @@ export class AlbumService {
             encryptedName: entry.encryptedName,
           });
         } catch {
-          // Skip entries we can't decrypt (might be corrupted or not a directory)
           continue;
         }
       }
@@ -92,10 +102,9 @@ export class AlbumService {
 
   /**
    * Create a new album in the vault root.
+   * Uses the ServiceWorker for storage operations.
    */
   async createAlbum(name: string): Promise<Album> {
-    const storage = this.vaultService.getStorage();
-
     // Generate a unique directory ID for the new album
     const directoryId = crypto.randomUUID();
 
@@ -107,26 +116,23 @@ export class AlbumService {
 
     // Create the .c9r folder in root
     const folderPath = `${rootPath}/${encryptedName}`;
-    await storage.createFolder(folderPath);
+    await this.swClient.createFolder(folderPath);
 
     // Write dir.c9r file with the directory ID
     const dirIdBytes = new TextEncoder().encode(directoryId);
-    await storage.writeFile(`${folderPath}/dir.c9r`, dirIdBytes.buffer as ArrayBuffer);
+    await this.swClient.writeFile(`${folderPath}/dir.c9r`, dirIdBytes.buffer as ArrayBuffer);
 
     // Compute and create the actual content directory for this album.
-    // Each level gets its own try/catch so a "folder exists" error on d/XX
-    // doesn't prevent d/XX/YYYYYY from being created.
     const albumStoragePath = await this.crypto.encryptDirectoryId(directoryId);
     const parts = albumStoragePath.split('/');
-    // parts = ['d', 'XX', 'YYYYYY...']
 
-    try { await storage.createFolder(parts[0]); }
+    try { await this.swClient.createFolder(parts[0]); }
     catch { /* d/ may already exist */ }
 
-    try { await storage.createFolder(`${parts[0]}/${parts[1]}`); }
+    try { await this.swClient.createFolder(`${parts[0]}/${parts[1]}`); }
     catch { /* d/XX may already exist */ }
 
-    await storage.createFolder(albumStoragePath);
+    await this.swClient.createFolder(albumStoragePath);
 
     const album: Album = {
       name,
@@ -136,18 +142,21 @@ export class AlbumService {
     };
 
     this._albums.update(albums => [...albums, album]);
+
+    // Invalidate directory cache so next load picks up the new album
+    await this.swClient.invalidateCache('directory', '_albums').catch(() => {});
+
     return album;
   }
 
   /**
    * Delete an album and all its contents.
+   * Uses the ServiceWorker for storage operations.
    */
   async deleteAlbum(album: Album): Promise<void> {
-    const storage = this.vaultService.getStorage();
-
     // Delete the album content directory
     try {
-      await storage.deleteFolder(album.storagePath);
+      await this.swClient.deleteFolder(album.storagePath);
     } catch {
       // Content dir might not exist or already deleted
     }
@@ -155,12 +164,16 @@ export class AlbumService {
     // Delete the .c9r folder marker in root
     const rootPath = await this.crypto.encryptDirectoryId(this.ROOT_DIR_ID);
     try {
-      await storage.deleteFolder(`${rootPath}/${album.encryptedName}`);
+      await this.swClient.deleteFolder(`${rootPath}/${album.encryptedName}`);
     } catch {
       // May already be gone
     }
 
     this._albums.update(albums => albums.filter(a => a.directoryId !== album.directoryId));
+
+    // Invalidate caches
+    await this.swClient.invalidateCache('directory', '_albums').catch(() => {});
+    await this.swClient.invalidateCache('directory', album.directoryId).catch(() => {});
   }
 
   /**
