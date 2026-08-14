@@ -53,8 +53,9 @@ export class AlbumService {
       this._albums.set(albums);
       return albums;
     } catch (err) {
-      // If SW is not ready or keys not set, fall back to direct access
-      if (err instanceof SwError && err.code === 'SW_NOT_READY') {
+      // Fall back to direct storage access when SW is unavailable or
+      // cannot fulfill the request (not ready, no keys, no token, etc.)
+      if (err instanceof SwError) {
         return this.loadAlbumsDirect();
       }
       throw err;
