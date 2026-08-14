@@ -1,17 +1,26 @@
 import { TestBed } from '@angular/core/testing';
 import { PhotoService, PhotoItem } from './photo.service';
 import { CryptoService } from '../crypto/crypto.service';
+import { VaultService } from '../vault/vault.service';
 import { HeicConverterService } from '../upload/heic-converter.service';
 import { SwClientService, SwError } from '../sw-client/sw-client.service';
+import type { StorageAdapter } from '../storage/storage-adapter.interface';
 import type { CachedPhotoEntry } from '../../../service-worker/models/responses';
 
 describe('PhotoService', () => {
   let service: PhotoService;
   let cryptoSpy: jasmine.SpyObj<CryptoService>;
   let swClientSpy: jasmine.SpyObj<SwClientService>;
+  let vaultServiceSpy: jasmine.SpyObj<VaultService>;
+  let storageMock: jasmine.SpyObj<StorageAdapter>;
   let heicSpy: jasmine.SpyObj<HeicConverterService>;
 
   beforeEach(() => {
+    storageMock = jasmine.createSpyObj<StorageAdapter>('StorageAdapter', [
+      'listFiles', 'readFile', 'writeFile', 'createFolder', 'deleteFolder', 'deleteFile',
+      'connect', 'disconnect', 'isConnected', 'fileExists', 'getQuota',
+    ]);
+
     cryptoSpy = jasmine.createSpyObj<CryptoService>('CryptoService', [
       'encryptDirectoryId', 'decryptFilename', 'decryptFile',
     ]);
@@ -20,6 +29,9 @@ describe('PhotoService', () => {
       'listPhotos', 'getThumbnail', 'getFile',
     ]);
 
+    vaultServiceSpy = jasmine.createSpyObj<VaultService>('VaultService', ['getStorage']);
+    vaultServiceSpy.getStorage.and.returnValue(storageMock);
+
     heicSpy = jasmine.createSpyObj<HeicConverterService>('HeicConverterService', ['ensureDisplayable']);
     heicSpy.ensureDisplayable.and.callFake(async (blob: Blob) => blob);
 
@@ -27,6 +39,7 @@ describe('PhotoService', () => {
       providers: [
         PhotoService,
         { provide: CryptoService, useValue: cryptoSpy },
+        { provide: VaultService, useValue: vaultServiceSpy },
         { provide: SwClientService, useValue: swClientSpy },
         { provide: HeicConverterService, useValue: heicSpy },
       ],
@@ -134,7 +147,7 @@ describe('PhotoService', () => {
       expect(swClientSpy.getThumbnail).toHaveBeenCalledTimes(1);
     });
 
-    it('should fall back to decrypting original when thumbnail not found', async () => {
+    it('should fall back to direct storage when thumbnail not found', async () => {
       const photo: PhotoItem = {
         encryptedName: 'nothumbs.c9r',
         name: 'photo.jpg',
@@ -148,13 +161,17 @@ describe('PhotoService', () => {
 
       // SW returns FILE_NOT_FOUND for thumbnail
       swClientSpy.getThumbnail.and.rejectWith(new SwError('FILE_NOT_FOUND', 'Thumbnail not found'));
-      // Fallback: getFile for original succeeds
-      swClientSpy.getFile.and.resolveTo(new ArrayBuffer(50));
+      // Direct storage fallback: thumbnail also not found → falls back to original
+      storageMock.readFile.and.callFake(async (path: string) => {
+        if (path.includes('.grid')) throw new Error('not found');
+        return new ArrayBuffer(50); // original file
+      });
       cryptoSpy.decryptFile.and.resolveTo(new ArrayBuffer(10));
 
       const url = await service.decryptThumbnail(photo, 'dir-id', 'grid');
       expect(url).toMatch(/^blob:/);
-      expect(swClientSpy.getFile).toHaveBeenCalledWith('d/AB/HASH/nothumbs.c9r');
+      // Should have tried the direct thumbnail path first, then original
+      expect(storageMock.readFile).toHaveBeenCalledWith('_intimapic/thumbs/dir-id/nothumbs.grid', undefined);
     });
 
     it('should re-throw AbortError without falling back', async () => {

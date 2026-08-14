@@ -1,5 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { CryptoService } from '../crypto/crypto.service';
+import { VaultService } from '../vault/vault.service';
 import { SwClientService, SwError } from '../sw-client/sw-client.service';
 import { BlobLruCache } from './lru-cache';
 import { HeicConverterService } from '../upload/heic-converter.service';
@@ -28,10 +29,9 @@ export interface PhotoItem {
 /**
  * Service to list and decrypt photos within an album.
  *
- * Listing is delegated to the ServiceWorker (cached directory listings +
- * filename decryption). Thumbnail/original fetching goes through the SW
- * for encrypted cache access, then decryption happens locally in the
- * main thread via CryptoService.
+ * Uses the ServiceWorker when available for cached/network access.
+ * Falls back to direct StorageAdapter access when SW is not ready
+ * (first visit, no token, keys not transferred yet).
  *
  * Supports three resolution tiers:
  * - grid: small thumbnail for gallery view (~300px)
@@ -41,6 +41,7 @@ export interface PhotoItem {
 @Injectable({ providedIn: 'root' })
 export class PhotoService {
   private readonly crypto = inject(CryptoService);
+  private readonly vaultService = inject(VaultService);
   private readonly swClient = inject(SwClientService);
   private readonly heicConverter = inject(HeicConverterService);
 
@@ -51,34 +52,68 @@ export class PhotoService {
 
   /**
    * List all photos in an album (by directory ID).
-   * Uses the ServiceWorker for cached/network directory listing + filename decryption.
-   * Returns items with decrypted names and existing in-memory blob URLs.
+   * Falls back to direct storage when SW is unavailable.
    */
   async listPhotos(directoryId: string, forceRefresh = false): Promise<PhotoItem[]> {
-    const { photos: entries } = await this.swClient.listPhotos(directoryId, forceRefresh);
+    try {
+      const { photos: entries } = await this.swClient.listPhotos(directoryId, forceRefresh);
 
-    return entries.map(entry => ({
-      encryptedName: entry.encryptedName,
-      name: entry.name,
-      storagePath: entry.storagePath,
-      thumbnailUrl: this.thumbnailCache.get(`grid:${entry.encryptedName}`) || null,
-      previewUrl: this.thumbnailCache.get(`preview:${entry.encryptedName}`) || null,
-      fullResUrl: this.fullResCache.get(`full:${entry.encryptedName}`) || null,
-      loading: false,
-      size: entry.size,
-    }));
+      return entries.map(entry => ({
+        encryptedName: entry.encryptedName,
+        name: entry.name,
+        storagePath: entry.storagePath,
+        thumbnailUrl: this.thumbnailCache.get(`grid:${entry.encryptedName}`) || null,
+        previewUrl: this.thumbnailCache.get(`preview:${entry.encryptedName}`) || null,
+        fullResUrl: this.fullResCache.get(`full:${entry.encryptedName}`) || null,
+        loading: false,
+        size: entry.size,
+      }));
+    } catch (err) {
+      if (err instanceof SwError) {
+        return this.listPhotosDirect(directoryId);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Fallback: List photos directly via storage adapter.
+   */
+  private async listPhotosDirect(directoryId: string): Promise<PhotoItem[]> {
+    const storage = this.vaultService.getStorage();
+    const dirPath = await this.crypto.encryptDirectoryId(directoryId);
+    const entries = await storage.listFiles(dirPath);
+
+    const photos: PhotoItem[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isDirectory && entry.encryptedName.endsWith('.c9r')) {
+        try {
+          const name = await this.crypto.decryptFilename(entry.encryptedName, directoryId);
+          if (isImageFile(name)) {
+            photos.push({
+              encryptedName: entry.encryptedName,
+              name,
+              storagePath: `${dirPath}/${entry.encryptedName}`,
+              thumbnailUrl: this.thumbnailCache.get(`grid:${entry.encryptedName}`) || null,
+              previewUrl: this.thumbnailCache.get(`preview:${entry.encryptedName}`) || null,
+              fullResUrl: this.fullResCache.get(`full:${entry.encryptedName}`) || null,
+              loading: false,
+              size: entry.size,
+            });
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    return photos;
   }
 
   /**
    * Decrypt a thumbnail (grid or preview size).
-   *
-   * Flow:
-   * 1. Check in-memory LRU cache (decrypted blob URL)
-   * 2. Request encrypted thumbnail from SW (SW checks its IndexedDB cache, then network)
-   * 3. Decrypt locally via CryptoService
-   * 4. Create blob URL and cache in memory
-   *
-   * Falls back to decrypting the original if thumbnail file doesn't exist.
+   * Falls back to direct storage when SW is unavailable.
    */
   async decryptThumbnail(photo: PhotoItem, directoryId: string, size: ThumbnailSize = 'grid', signal?: AbortSignal): Promise<string> {
     const cacheKey = `${size}:${photo.encryptedName}`;
@@ -86,36 +121,56 @@ export class PhotoService {
     if (cached) return cached;
 
     try {
-      // Request encrypted thumbnail from SW (may come from IndexedDB cache or network)
       const { data: encryptedData } = await this.swClient.getThumbnail(
         photo.encryptedName,
         directoryId,
         size
       );
 
-      // Check abort before expensive decrypt
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-      // Decrypt locally
       const decryptedData = await this.crypto.decryptFile(encryptedData);
-
       const blob = new Blob([decryptedData], { type: 'image/jpeg' });
       const url = URL.createObjectURL(blob);
-
       this.thumbnailCache.set(cacheKey, url);
       return url;
     } catch (err) {
-      // Re-throw abort errors
       if (err instanceof DOMException && err.name === 'AbortError') {
         throw err;
       }
 
-      // Thumbnail not found in SW (FILE_NOT_FOUND) → fall back to original
-      if (err instanceof SwError && (err.code === 'FILE_NOT_FOUND' || err.code === 'OFFLINE')) {
-        return this.decryptOriginal(photo, signal);
+      // Any SW error → fall back to direct storage
+      if (err instanceof SwError) {
+        return this.decryptThumbnailDirect(photo, directoryId, size, signal);
       }
 
       throw err;
+    }
+  }
+
+  /**
+   * Fallback: Load and decrypt thumbnail directly via storage adapter.
+   */
+  private async decryptThumbnailDirect(photo: PhotoItem, directoryId: string, size: ThumbnailSize, signal?: AbortSignal): Promise<string> {
+    const cacheKey = `${size}:${photo.encryptedName}`;
+    const storage = this.vaultService.getStorage();
+    const thumbDirId = directoryId || '_root';
+    const baseName = photo.encryptedName.slice(0, -4);
+    const thumbPath = `_intimapic/thumbs/${thumbDirId}/${baseName}.${size}`;
+
+    try {
+      const encryptedData = await storage.readFile(thumbPath, signal);
+      const decryptedData = await this.crypto.decryptFile(encryptedData);
+      const blob = new Blob([decryptedData], { type: 'image/jpeg' });
+      const url = URL.createObjectURL(blob);
+      this.thumbnailCache.set(cacheKey, url);
+      return url;
+    } catch (innerErr) {
+      if (innerErr instanceof DOMException && innerErr.name === 'AbortError') {
+        throw innerErr;
+      }
+      // Thumbnail doesn't exist → fall back to original
+      return this.decryptOriginal(photo, signal);
     }
   }
 
@@ -128,22 +183,25 @@ export class PhotoService {
 
   /**
    * Decrypt the original full-resolution file.
-   * Used for download or as fallback when thumbnails aren't available.
-   *
-   * Flow:
-   * 1. Check in-memory LRU cache
-   * 2. Request encrypted original from SW (always network, not cached by SW)
-   * 3. Decrypt locally
-   * 4. HEIC conversion if needed
-   * 5. Create blob URL and cache in memory
+   * Falls back to direct storage when SW is unavailable.
    */
   async decryptOriginal(photo: PhotoItem, signal?: AbortSignal): Promise<string> {
     const cacheKey = `full:${photo.encryptedName}`;
     const cached = this.fullResCache.get(cacheKey);
     if (cached) return cached;
 
-    // Read encrypted original via SW (no SW caching for originals – too large)
-    const encryptedData = await this.swClient.getFile(photo.storagePath);
+    let encryptedData: ArrayBuffer;
+
+    try {
+      encryptedData = await this.swClient.getFile(photo.storagePath);
+    } catch (err) {
+      if (err instanceof SwError) {
+        const storage = this.vaultService.getStorage();
+        encryptedData = await storage.readFile(photo.storagePath, signal);
+      } else {
+        throw err;
+      }
+    }
 
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
@@ -152,11 +210,9 @@ export class PhotoService {
     const mimeType = getMimeType(photo.name);
     let blob = new Blob([decryptedData], { type: mimeType });
 
-    // Convert HEIC to JPEG for browsers without native HEIC support
     blob = await this.heicConverter.ensureDisplayable(blob, photo.name);
 
     const url = URL.createObjectURL(blob);
-
     this.fullResCache.set(cacheKey, url);
     return url;
   }

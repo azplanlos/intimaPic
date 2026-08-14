@@ -110,6 +110,16 @@ describe('AlbumService', () => {
       expect(albums[0].directoryId).toBe('uuid-album-123');
     });
 
+    it('should fall back to direct storage on TOKEN_EXPIRED', async () => {
+      swClientSpy.listAlbums.and.rejectWith(new SwError('TOKEN_EXPIRED', 'No token'));
+
+      cryptoSpy.encryptDirectoryId.and.resolveTo('d/AB/ROOT');
+      storageMock.listFiles.and.resolveTo([]);
+
+      const albums = await service.loadAlbums();
+      expect(albums).toEqual([]);
+    });
+
     it('should pass forceRefresh to SW', async () => {
       swClientSpy.listAlbums.and.resolveTo({ albums: [], fromCache: false });
 
