@@ -97,8 +97,8 @@ export class SwOneDriveAdapter implements SwStorageAdapter {
 
   connect(token: string, config?: Record<string, unknown>): void {
     this.accessToken = token;
-    if (config?.rootPath && typeof config.rootPath === 'string') {
-      this.rootPath = config.rootPath;
+    if (config?.['rootPath'] && typeof config['rootPath'] === 'string') {
+      this.rootPath = config['rootPath'];
     }
     this.connected = true;
   }
