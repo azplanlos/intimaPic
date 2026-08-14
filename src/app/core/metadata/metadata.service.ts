@@ -68,12 +68,16 @@ export class MetadataService {
     // Remove visibility change listener
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
 
-    // Flush any remaining changes
+    // Flush any remaining changes to remote storage
     await this.flush();
 
     this.dirty = false;
     this.cache.clear();
-    await this.store.clear();
+    // NOTE: Do NOT clear the IndexedDB store on lock.
+    // Metadata records (EXIF dates, ratings, favorites) should persist
+    // locally across sessions to avoid re-downloading originals for
+    // EXIF extraction on every vault open.
+    // The store is only cleared on vault deletion (reset).
   }
 
   // ─── EXIF Extraction ───────────────────────────────────────────
@@ -101,8 +105,11 @@ export class MetadataService {
     // Filter to only photos not already in cache
     const missing = photos.filter(p => !this.cache.has(p.encryptedName));
     if (missing.length === 0) return;
+    // Limit to 5 photos per batch to avoid excessive network usage.
+    // The rest will be extracted when the user scrolls to them or next time the album opens.
+    const batch = missing.slice(0, 5);
     // Process asynchronously without blocking
-    this.processBackgroundQueue(missing);
+    this.processBackgroundQueue(batch);
   }
 
   private async processBackgroundQueue(photos: Array<{ encryptedName: string; storagePath: string }>): Promise<void> {
@@ -119,8 +126,9 @@ export class MetadataService {
         // Extract EXIF and store metadata
         await this.extractAndStore(photo.encryptedName, imageData);
 
-        // Yield to the main thread between items to avoid blocking UI
-        await new Promise(resolve => setTimeout(resolve, 50));
+        // Long pause between items to avoid network saturation.
+        // EXIF extraction is low-priority background work.
+        await new Promise(resolve => setTimeout(resolve, 2000));
       } catch {
         // Skip failed photos, continue with next
         continue;

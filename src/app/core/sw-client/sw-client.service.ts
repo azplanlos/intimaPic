@@ -450,7 +450,10 @@ export class SwClientService {
       const swUrl = new URL('sw.js', document.baseURI).href;
       const scope = new URL('./', document.baseURI).href;
 
-      const registration = await navigator.serviceWorker.register(swUrl, { scope });
+      const registration = await navigator.serviceWorker.register(swUrl, {
+        scope,
+        type: 'classic',  // Explicit: not an ES module. Fixes Safari/iOS "Importing a module script failed"
+      });
 
       registration.addEventListener('updatefound', () => {
         const newWorker = registration.installing;
