@@ -12,10 +12,13 @@ import { argv } from 'process';
 
 const isDev = argv.includes('--dev');
 
+// Allow overriding output directory via env var (used in CI)
+const outputDir = process.env.SW_OUTPUT_DIR || 'dist/intimapic/browser';
+
 await build({
   entryPoints: ['src/service-worker/sw.ts'],
   bundle: true,
-  outfile: 'dist/intimapic/browser/sw.js',
+  outfile: `${outputDir}/sw.js`,
   format: 'iife',
   platform: 'browser',
   target: 'es2022',

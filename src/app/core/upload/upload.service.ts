@@ -3,8 +3,7 @@ import { CryptoService } from '../crypto/crypto.service';
 import { ThumbnailService } from './thumbnail.service';
 import { HeicConverterService } from './heic-converter.service';
 import { UploadQueueService } from './upload-queue.service';
-import { VaultService } from '../vault/vault.service';
-import type { StorageAdapter } from '../storage/storage-adapter.interface';
+import { SwClientService } from '../sw-client/sw-client.service';
 
 export interface UploadProgress {
   id: string;
@@ -36,6 +35,9 @@ const THUMBS_DIR = `${INTIMAPIC_META_ROOT}/thumbs`;
  * 2. Encrypt filename
  * 3. Encrypt original file → upload to Cryptomator d/ structure
  * 4. Encrypt thumbnails → upload to _intimapic/thumbs/
+ *
+ * All storage operations go through the ServiceWorker via SwClientService,
+ * ensuring uploaded files are also written to the SW's encrypted cache.
  */
 @Injectable({ providedIn: 'root' })
 export class UploadService {
@@ -43,7 +45,7 @@ export class UploadService {
   private readonly thumbnailService = inject(ThumbnailService);
   private readonly heicConverter = inject(HeicConverterService);
   private readonly uploadQueue = inject(UploadQueueService);
-  private readonly vaultService = inject(VaultService);
+  private readonly swClient = inject(SwClientService);
 
   private readonly _activeUploads = signal<UploadProgress[]>([]);
   readonly activeUploads = this._activeUploads.asReadonly();
@@ -105,16 +107,6 @@ export class UploadService {
     file: File,
     targetFolder: string
   ): Promise<void> {
-    let storage: StorageAdapter;
-
-    try {
-      storage = this.vaultService.getStorage();
-    } catch {
-      this.updateProgress(id, { step: 'error', progress: 0, error: 'Nicht verbunden' });
-      await this.uploadQueue.updateStatus(id, 'error', 'Nicht verbunden');
-      return;
-    }
-
     try {
       // The targetFolder is the Cryptomator directory ID (empty string = root)
       const directoryId = targetFolder || '';
@@ -142,7 +134,7 @@ export class UploadService {
       const encryptedGrid = await this.crypto.encryptFile(thumbs.grid.data);
       const encryptedPreview = await this.crypto.encryptFile(thumbs.preview.data);
 
-      // Step 5: Upload original to Cryptomator directory structure
+      // Step 5: Upload original to Cryptomator directory structure via SW
       this.updateProgress(id, { step: 'uploading', progress: 60 });
       await this.uploadQueue.updateStatus(id, 'uploading');
 
@@ -152,34 +144,37 @@ export class UploadService {
       // Ensure the Cryptomator directory exists (separate try/catch per level)
       const parts = dirPath.split('/');
 
-      try { await storage.createFolder(parts[0]); }
+      try { await this.swClient.createFolder(parts[0]); }
       catch { /* d/ may already exist */ }
 
-      try { await storage.createFolder(`${parts[0]}/${parts[1]}`); }
+      try { await this.swClient.createFolder(`${parts[0]}/${parts[1]}`); }
       catch { /* d/XX may already exist */ }
 
-      try { await storage.createFolder(dirPath); }
+      try { await this.swClient.createFolder(dirPath); }
       catch { /* may already exist */ }
 
       // Upload encrypted original
       const filePath = `${dirPath}/${encryptedName}`;
-      await storage.writeFile(filePath, encryptedFile);
+      await this.swClient.writeFile(filePath, encryptedFile);
 
-      // Step 6: Upload thumbnails to _intimapic/thumbs/<directoryId>/
+      // Step 6: Upload thumbnails to _intimapic/thumbs/<directoryId>/ via SW
       this.updateProgress(id, { step: 'uploading', progress: 80 });
       const thumbDir = `${THUMBS_DIR}/${directoryId || '_root'}`;
-      await this.ensureThumbDirectory(storage, thumbDir);
+      await this.ensureThumbDirectory(thumbDir);
 
       // Strip .c9r suffix for thumb names, add size suffix
       const baseName = encryptedName.slice(0, -4); // remove .c9r
-      await storage.writeFile(`${thumbDir}/${baseName}.grid`, encryptedGrid);
+      await this.swClient.writeFile(`${thumbDir}/${baseName}.grid`, encryptedGrid);
 
       this.updateProgress(id, { step: 'uploading', progress: 90 });
-      await storage.writeFile(`${thumbDir}/${baseName}.preview`, encryptedPreview);
+      await this.swClient.writeFile(`${thumbDir}/${baseName}.preview`, encryptedPreview);
 
       // Done
       this.updateProgress(id, { step: 'done', progress: 100 });
       await this.uploadQueue.updateStatus(id, 'done');
+
+      // Invalidate the directory listing cache so new photos appear immediately
+      await this.swClient.invalidateCache('directory', directoryId || '_albums').catch(() => {});
 
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Upload fehlgeschlagen';
@@ -189,14 +184,14 @@ export class UploadService {
   }
 
   /**
-   * Ensure the thumbnail directory hierarchy exists.
+   * Ensure the thumbnail directory hierarchy exists (via SW).
    */
-  private async ensureThumbDirectory(storage: StorageAdapter, thumbDir: string): Promise<void> {
+  private async ensureThumbDirectory(thumbDir: string): Promise<void> {
     const segments = thumbDir.split('/');
     let path = '';
     for (const segment of segments) {
       path = path ? `${path}/${segment}` : segment;
-      try { await storage.createFolder(path); }
+      try { await this.swClient.createFolder(path); }
       catch { /* may already exist */ }
     }
   }
