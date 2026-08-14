@@ -61,12 +61,26 @@ export interface CachedVaultMeta {
   updatedAt: number;
 }
 
+export interface CachedDirectoryId {
+  /** Composite key: '<vaultId>:<encryptedName>' */
+  key: string;
+  /** Vault ID */
+  vaultId: string;
+  /** Encrypted folder name (e.g. "abc123.c9r") */
+  encryptedName: string;
+  /** The directory ID read from dir.c9r */
+  directoryId: string;
+  /** When cached */
+  cachedAt: number;
+}
+
 // ─── Database Definition ───────────────────────────────────────────────────────
 
 export class SwCacheDatabase extends Dexie {
   thumbnails!: Table<CachedThumbnail, string>;
   directories!: Table<CachedDirectoryListing, string>;
   vaultMeta!: Table<CachedVaultMeta, string>;
+  directoryIds!: Table<CachedDirectoryId, string>;
 
   constructor() {
     super('intimapic_sw_cache');
@@ -75,6 +89,13 @@ export class SwCacheDatabase extends Dexie {
       thumbnails: 'key, vaultId, sizeType, lastAccess, size',
       directories: 'key, vaultId, directoryId, syncedAt',
       vaultMeta: 'vaultId',
+    });
+
+    this.version(2).stores({
+      thumbnails: 'key, vaultId, sizeType, lastAccess, size',
+      directories: 'key, vaultId, directoryId, syncedAt',
+      vaultMeta: 'vaultId',
+      directoryIds: 'key, vaultId, encryptedName',
     });
   }
 }

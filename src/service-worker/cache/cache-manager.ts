@@ -5,7 +5,7 @@
  * The cache survives vault lock (encrypted data is useless without keys).
  */
 
-import { swCacheDb, type CachedThumbnail, type CachedDirectoryListing, type CachedVaultMeta } from './cache-db';
+import { swCacheDb, type CachedThumbnail, type CachedDirectoryListing, type CachedVaultMeta, type CachedDirectoryId } from './cache-db';
 
 export interface CacheStats {
   totalEntries: number;
@@ -113,6 +113,51 @@ export class CacheManager {
    */
   async deleteVaultMeta(vaultId: string): Promise<void> {
     await swCacheDb.vaultMeta.delete(vaultId);
+  }
+
+  // ─── Directory IDs (dir.c9r content cache) ─────────────────────────────────
+
+  /**
+   * Get a cached directory ID for an encrypted folder name.
+   */
+  async getDirectoryId(vaultId: string, encryptedName: string): Promise<string | null> {
+    try {
+      const key = `${vaultId}:${encryptedName}`;
+      const entry = await swCacheDb.directoryIds.get(key);
+      return entry?.directoryId ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Store a directory ID mapping (encryptedName → directoryId).
+   */
+  async putDirectoryId(vaultId: string, encryptedName: string, directoryId: string): Promise<void> {
+    const key = `${vaultId}:${encryptedName}`;
+    await swCacheDb.directoryIds.put({
+      key,
+      vaultId,
+      encryptedName,
+      directoryId,
+      cachedAt: Date.now(),
+    });
+  }
+
+  /**
+   * Get all cached directory IDs for a vault (for offline album listing).
+   */
+  async getAllDirectoryIds(vaultId: string): Promise<Map<string, string>> {
+    try {
+      const entries = await swCacheDb.directoryIds.where('vaultId').equals(vaultId).toArray();
+      const map = new Map<string, string>();
+      for (const entry of entries) {
+        map.set(entry.encryptedName, entry.directoryId);
+      }
+      return map;
+    } catch {
+      return new Map();
+    }
   }
 
   // ─── Cache Management ──────────────────────────────────────────────────────
