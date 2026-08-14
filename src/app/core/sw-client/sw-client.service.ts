@@ -412,7 +412,12 @@ export class SwClientService {
     }
 
     try {
-      const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+      // Use the app's base href to determine the SW URL.
+      // In production with --base-href /intimaPic/, sw.js lives at /intimaPic/sw.js
+      const swUrl = new URL('sw.js', document.baseURI).href;
+      const scope = new URL('./', document.baseURI).href;
+
+      const registration = await navigator.serviceWorker.register(swUrl, { scope });
 
       registration.addEventListener('updatefound', () => {
         const newWorker = registration.installing;
