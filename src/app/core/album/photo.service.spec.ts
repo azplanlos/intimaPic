@@ -1,30 +1,24 @@
 import { TestBed } from '@angular/core/testing';
 import { PhotoService, PhotoItem } from './photo.service';
 import { CryptoService } from '../crypto/crypto.service';
-import { VaultService } from '../vault/vault.service';
 import { HeicConverterService } from '../upload/heic-converter.service';
-import type { StorageAdapter } from '../storage/storage-adapter.interface';
-import type { FileEntry } from '../crypto/crypto.models';
+import { SwClientService, SwError } from '../sw-client/sw-client.service';
+import type { CachedPhotoEntry } from '../../../service-worker/models/responses';
 
 describe('PhotoService', () => {
   let service: PhotoService;
   let cryptoSpy: jasmine.SpyObj<CryptoService>;
-  let vaultServiceSpy: jasmine.SpyObj<VaultService>;
+  let swClientSpy: jasmine.SpyObj<SwClientService>;
   let heicSpy: jasmine.SpyObj<HeicConverterService>;
-  let storageMock: jasmine.SpyObj<StorageAdapter>;
 
   beforeEach(() => {
-    storageMock = jasmine.createSpyObj<StorageAdapter>('StorageAdapter', [
-      'listFiles', 'readFile', 'writeFile', 'createFolder', 'deleteFolder', 'deleteFile',
-      'connect', 'disconnect', 'isConnected', 'fileExists', 'getQuota',
-    ]);
-
     cryptoSpy = jasmine.createSpyObj<CryptoService>('CryptoService', [
       'encryptDirectoryId', 'decryptFilename', 'decryptFile',
     ]);
 
-    vaultServiceSpy = jasmine.createSpyObj<VaultService>('VaultService', ['getStorage']);
-    vaultServiceSpy.getStorage.and.returnValue(storageMock);
+    swClientSpy = jasmine.createSpyObj<SwClientService>('SwClientService', [
+      'listPhotos', 'getThumbnail', 'getFile',
+    ]);
 
     heicSpy = jasmine.createSpyObj<HeicConverterService>('HeicConverterService', ['ensureDisplayable']);
     heicSpy.ensureDisplayable.and.callFake(async (blob: Blob) => blob);
@@ -33,7 +27,7 @@ describe('PhotoService', () => {
       providers: [
         PhotoService,
         { provide: CryptoService, useValue: cryptoSpy },
-        { provide: VaultService, useValue: vaultServiceSpy },
+        { provide: SwClientService, useValue: swClientSpy },
         { provide: HeicConverterService, useValue: heicSpy },
       ],
     });
@@ -50,19 +44,12 @@ describe('PhotoService', () => {
   });
 
   describe('listPhotos', () => {
-    it('should list and decrypt photo filenames', async () => {
-      cryptoSpy.encryptDirectoryId.and.resolveTo('d/AB/ALBUMHASH');
-
-      const entries: FileEntry[] = [
-        { encryptedName: 'enc1.c9r', path: '', size: 5000, lastModified: new Date(), isDirectory: false },
-        { encryptedName: 'enc2.c9r', path: '', size: 3000, lastModified: new Date(), isDirectory: false },
+    it('should return photo items from SW response', async () => {
+      const entries: CachedPhotoEntry[] = [
+        { encryptedName: 'enc1.c9r', name: 'photo1.jpg', storagePath: 'd/AB/ALBUMHASH/enc1.c9r', size: 5000, lastModified: '2024-01-01T00:00:00Z' },
+        { encryptedName: 'enc2.c9r', name: 'photo2.png', storagePath: 'd/AB/ALBUMHASH/enc2.c9r', size: 3000, lastModified: '2024-01-02T00:00:00Z' },
       ];
-      storageMock.listFiles.and.resolveTo(entries);
-
-      cryptoSpy.decryptFilename.and.callFake(async (name: string) => {
-        if (name === 'enc1.c9r') return 'photo1.jpg';
-        return 'photo2.png';
-      });
+      swClientSpy.listPhotos.and.resolveTo({ photos: entries, fromCache: false });
 
       const photos = await service.listPhotos('album-dir-id');
 
@@ -74,51 +61,33 @@ describe('PhotoService', () => {
       expect(photos[1].name).toBe('photo2.png');
     });
 
-    it('should skip directories', async () => {
-      cryptoSpy.encryptDirectoryId.and.resolveTo('d/AB/HASH');
-      storageMock.listFiles.and.resolveTo([
-        { encryptedName: 'subdir.c9r', path: '', size: 0, lastModified: new Date(), isDirectory: true },
-      ]);
+    it('should populate existing in-memory blob URLs from cache', async () => {
+      // First call to populate the thumbnail cache
+      const fakeEncrypted = new ArrayBuffer(100);
+      const fakeDecrypted = new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0]).buffer as ArrayBuffer;
+      swClientSpy.getThumbnail.and.resolveTo({ data: fakeEncrypted, fromCache: true });
+      cryptoSpy.decryptFile.and.resolveTo(fakeDecrypted);
+
+      const photo: PhotoItem = {
+        encryptedName: 'enc1.c9r', name: 'photo1.jpg',
+        storagePath: 'd/AB/HASH/enc1.c9r', thumbnailUrl: null,
+        previewUrl: null, fullResUrl: null, loading: false, size: 5000,
+      };
+      await service.decryptThumbnail(photo, 'dir-id', 'grid');
+
+      // Now listPhotos should include the cached URL
+      swClientSpy.listPhotos.and.resolveTo({
+        photos: [{ encryptedName: 'enc1.c9r', name: 'photo1.jpg', storagePath: 'd/AB/HASH/enc1.c9r', size: 5000, lastModified: '' }],
+        fromCache: false,
+      });
 
       const photos = await service.listPhotos('dir-id');
-      expect(photos.length).toBe(0);
-    });
-
-    it('should skip non-.c9r files', async () => {
-      cryptoSpy.encryptDirectoryId.and.resolveTo('d/AB/HASH');
-      storageMock.listFiles.and.resolveTo([
-        { encryptedName: 'somefile.txt', path: '', size: 100, lastModified: new Date(), isDirectory: false },
-      ]);
-
-      const photos = await service.listPhotos('dir-id');
-      expect(photos.length).toBe(0);
-    });
-
-    it('should skip non-image files after decryption', async () => {
-      cryptoSpy.encryptDirectoryId.and.resolveTo('d/AB/HASH');
-      storageMock.listFiles.and.resolveTo([
-        { encryptedName: 'enc.c9r', path: '', size: 100, lastModified: new Date(), isDirectory: false },
-      ]);
-      cryptoSpy.decryptFilename.and.resolveTo('document.pdf');
-
-      const photos = await service.listPhotos('dir-id');
-      expect(photos.length).toBe(0);
-    });
-
-    it('should skip files that fail to decrypt', async () => {
-      cryptoSpy.encryptDirectoryId.and.resolveTo('d/AB/HASH');
-      storageMock.listFiles.and.resolveTo([
-        { encryptedName: 'broken.c9r', path: '', size: 100, lastModified: new Date(), isDirectory: false },
-      ]);
-      cryptoSpy.decryptFilename.and.rejectWith(new Error('decrypt failed'));
-
-      const photos = await service.listPhotos('dir-id');
-      expect(photos.length).toBe(0);
+      expect(photos[0].thumbnailUrl).toMatch(/^blob:/);
     });
   });
 
   describe('decryptThumbnail', () => {
-    it('should read and decrypt thumbnail from _intimapic/thumbs/', async () => {
+    it('should fetch encrypted thumbnail from SW and decrypt locally', async () => {
       const photo: PhotoItem = {
         encryptedName: 'abc123.c9r',
         name: 'photo.jpg',
@@ -130,38 +99,19 @@ describe('PhotoService', () => {
         size: 5000,
       };
 
+      const fakeEncrypted = new ArrayBuffer(100);
       const fakeJpeg = new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0]).buffer as ArrayBuffer;
-      storageMock.readFile.and.resolveTo(new ArrayBuffer(100));
+      swClientSpy.getThumbnail.and.resolveTo({ data: fakeEncrypted, fromCache: false });
       cryptoSpy.decryptFile.and.resolveTo(fakeJpeg);
 
       const url = await service.decryptThumbnail(photo, 'album-dir-id', 'grid');
 
-      expect(storageMock.readFile).toHaveBeenCalledWith('_intimapic/thumbs/album-dir-id/abc123.grid', undefined);
-      expect(cryptoSpy.decryptFile).toHaveBeenCalled();
+      expect(swClientSpy.getThumbnail).toHaveBeenCalledWith('abc123.c9r', 'album-dir-id', 'grid');
+      expect(cryptoSpy.decryptFile).toHaveBeenCalledWith(fakeEncrypted);
       expect(url).toMatch(/^blob:/);
     });
 
-    it('should use _root as directory for root photos', async () => {
-      const photo: PhotoItem = {
-        encryptedName: 'xyz.c9r',
-        name: 'photo.jpg',
-        storagePath: 'd/AB/HASH/xyz.c9r',
-        thumbnailUrl: null,
-        previewUrl: null,
-        fullResUrl: null,
-        loading: false,
-        size: 1000,
-      };
-
-      storageMock.readFile.and.resolveTo(new ArrayBuffer(50));
-      cryptoSpy.decryptFile.and.resolveTo(new ArrayBuffer(10));
-
-      await service.decryptThumbnail(photo, '', 'grid');
-
-      expect(storageMock.readFile).toHaveBeenCalledWith('_intimapic/thumbs/_root/xyz.grid', undefined);
-    });
-
-    it('should return cached URL on second call', async () => {
+    it('should return cached URL on second call without fetching again', async () => {
       const photo: PhotoItem = {
         encryptedName: 'cached.c9r',
         name: 'photo.jpg',
@@ -173,15 +123,15 @@ describe('PhotoService', () => {
         size: 1000,
       };
 
-      storageMock.readFile.and.resolveTo(new ArrayBuffer(50));
+      swClientSpy.getThumbnail.and.resolveTo({ data: new ArrayBuffer(50), fromCache: true });
       cryptoSpy.decryptFile.and.resolveTo(new ArrayBuffer(10));
 
       const url1 = await service.decryptThumbnail(photo, 'dir-id', 'grid');
       const url2 = await service.decryptThumbnail(photo, 'dir-id', 'grid');
 
       expect(url1).toBe(url2);
-      // Should only have read file once
-      expect(storageMock.readFile).toHaveBeenCalledTimes(1);
+      // Should only have called SW once
+      expect(swClientSpy.getThumbnail).toHaveBeenCalledTimes(1);
     });
 
     it('should fall back to decrypting original when thumbnail not found', async () => {
@@ -196,16 +146,57 @@ describe('PhotoService', () => {
         size: 1000,
       };
 
-      // First readFile (thumbnail) throws, second (original) succeeds
-      let callCount = 0;
-      storageMock.readFile.and.callFake(async () => {
-        callCount++;
-        if (callCount === 1) throw new Error('not found');
-        return new ArrayBuffer(50);
-      });
+      // SW returns FILE_NOT_FOUND for thumbnail
+      swClientSpy.getThumbnail.and.rejectWith(new SwError('FILE_NOT_FOUND', 'Thumbnail not found'));
+      // Fallback: getFile for original succeeds
+      swClientSpy.getFile.and.resolveTo(new ArrayBuffer(50));
       cryptoSpy.decryptFile.and.resolveTo(new ArrayBuffer(10));
 
       const url = await service.decryptThumbnail(photo, 'dir-id', 'grid');
+      expect(url).toMatch(/^blob:/);
+      expect(swClientSpy.getFile).toHaveBeenCalledWith('d/AB/HASH/nothumbs.c9r');
+    });
+
+    it('should re-throw AbortError without falling back', async () => {
+      const photo: PhotoItem = {
+        encryptedName: 'abort.c9r',
+        name: 'photo.jpg',
+        storagePath: 'd/AB/HASH/abort.c9r',
+        thumbnailUrl: null,
+        previewUrl: null,
+        fullResUrl: null,
+        loading: false,
+        size: 1000,
+      };
+
+      swClientSpy.getThumbnail.and.rejectWith(new DOMException('Aborted', 'AbortError'));
+
+      await expectAsync(
+        service.decryptThumbnail(photo, 'dir-id', 'grid')
+      ).toBeRejectedWithError('Aborted');
+    });
+  });
+
+  describe('decryptOriginal', () => {
+    it('should fetch encrypted original from SW and decrypt', async () => {
+      const photo: PhotoItem = {
+        encryptedName: 'orig.c9r',
+        name: 'photo.jpg',
+        storagePath: 'd/AB/HASH/orig.c9r',
+        thumbnailUrl: null,
+        previewUrl: null,
+        fullResUrl: null,
+        loading: false,
+        size: 5000000,
+      };
+
+      swClientSpy.getFile.and.resolveTo(new ArrayBuffer(5000));
+      cryptoSpy.decryptFile.and.resolveTo(new ArrayBuffer(4000));
+
+      const url = await service.decryptOriginal(photo);
+
+      expect(swClientSpy.getFile).toHaveBeenCalledWith('d/AB/HASH/orig.c9r');
+      expect(cryptoSpy.decryptFile).toHaveBeenCalled();
       expect(url).toMatch(/^blob:/);
     });
   });
@@ -223,7 +214,7 @@ describe('PhotoService', () => {
         size: 1000,
       };
 
-      storageMock.readFile.and.resolveTo(new ArrayBuffer(50));
+      swClientSpy.getThumbnail.and.resolveTo({ data: new ArrayBuffer(50), fromCache: true });
       cryptoSpy.decryptFile.and.resolveTo(new ArrayBuffer(10));
 
       await service.decryptThumbnail(photo, 'dir-id', 'grid');
@@ -231,7 +222,7 @@ describe('PhotoService', () => {
 
       // After clearing, should fetch again
       await service.decryptThumbnail(photo, 'dir-id', 'grid');
-      expect(storageMock.readFile).toHaveBeenCalledTimes(2);
+      expect(swClientSpy.getThumbnail).toHaveBeenCalledTimes(2);
     });
   });
 });
