@@ -2,10 +2,8 @@ import { Injectable, inject, signal } from '@angular/core';
 import { CryptoService } from '../crypto/crypto.service';
 import { ThumbnailService } from './thumbnail.service';
 import { HeicConverterService } from './heic-converter.service';
-import { VaultService } from '../vault/vault.service';
 import { AlbumService, type Album } from '../album/album.service';
-import type { StorageAdapter } from '../storage/storage-adapter.interface';
-import type { FileEntry } from '../crypto/crypto.models';
+import { SwClientService } from '../sw-client/sw-client.service';
 
 export interface ThumbnailSyncProgress {
   /** Total files that need thumbnails */
@@ -30,16 +28,16 @@ const THUMBS_DIR = `${INTIMAPIC_META_ROOT}/thumbs`;
  * 2. Checks whether corresponding thumbnail files exist in _intimapic/thumbs/
  * 3. For any missing thumbnails: decrypts the original, generates grid+preview, encrypts and uploads
  *
- * This ensures photos added externally (e.g. via iOS Shortcuts + Cryptomator)
- * always have thumbnails available in the gallery.
+ * All storage operations now go through the ServiceWorker via SwClientService.
+ * This ensures thumbnails fetched during sync are also cached in the SW's IndexedDB.
  */
 @Injectable({ providedIn: 'root' })
 export class ThumbnailSyncService {
   private readonly crypto = inject(CryptoService);
   private readonly thumbnailService = inject(ThumbnailService);
   private readonly heicConverter = inject(HeicConverterService);
-  private readonly vaultService = inject(VaultService);
   private readonly albumService = inject(AlbumService);
+  private readonly swClient = inject(SwClientService);
 
   private readonly _progress = signal<ThumbnailSyncProgress>({
     total: 0,
@@ -61,17 +59,15 @@ export class ThumbnailSyncService {
     this._progress.set({ total: 0, processed: 0, currentFile: '', running: true });
 
     try {
-      const storage = this.vaultService.getStorage();
-
-      // Load all albums
+      // Load all albums via SW
       const albums = await this.albumService.loadAlbums();
 
       // Sync root directory (directoryId = '')
-      await this.syncDirectory(storage, '', '_root');
+      await this.syncDirectory('', '_root');
 
       // Sync each album
       for (const album of albums) {
-        await this.syncDirectory(storage, album.directoryId, album.directoryId);
+        await this.syncDirectory(album.directoryId, album.directoryId);
       }
     } catch (err) {
       console.error('[ThumbnailSync] Error during sync:', err);
@@ -82,53 +78,32 @@ export class ThumbnailSyncService {
 
   /**
    * Sync thumbnails for a single directory (album or root).
-   * @param storage - The active storage adapter
    * @param directoryId - Cryptomator directory ID (empty string for root)
    * @param thumbDirKey - Key used in _intimapic/thumbs/ (directoryId or '_root')
    */
-  async syncDirectory(
-    storage: StorageAdapter,
-    directoryId: string,
-    thumbDirKey: string
-  ): Promise<void> {
-    const dirPath = await this.crypto.encryptDirectoryId(directoryId);
-
-    // List all files in this album directory
-    let entries: FileEntry[];
+  async syncDirectory(directoryId: string, thumbDirKey: string): Promise<void> {
+    // Use SW to list photos (already decrypted names)
+    let photos: Array<{ encryptedName: string; name: string; storagePath: string; size: number }>;
     try {
-      entries = await storage.listFiles(dirPath);
+      const result = await this.swClient.listPhotos(directoryId);
+      photos = result.photos;
     } catch {
-      // Directory might not exist yet
+      // Directory might not exist yet or offline
       return;
     }
 
-    // Filter to photo .c9r files (not directories)
-    const photoEntries = entries.filter(
-      e => !e.isDirectory && e.encryptedName.endsWith('.c9r')
-    );
-
     // Determine which photos are missing thumbnails
     const thumbDir = `${THUMBS_DIR}/${thumbDirKey}`;
-    const missingThumbs: FileEntry[] = [];
+    const missingThumbs: Array<{ encryptedName: string; name: string; storagePath: string }> = [];
 
-    for (const entry of photoEntries) {
-      const baseName = entry.encryptedName.slice(0, -4); // strip .c9r
+    for (const photo of photos) {
+      const baseName = photo.encryptedName.slice(0, -4); // strip .c9r
       const gridPath = `${thumbDir}/${baseName}.grid`;
 
-      const exists = await this.thumbnailExists(storage, gridPath);
+      const exists = await this.thumbnailExists(gridPath);
       if (!exists) {
-        // Verify it's actually an image by decrypting the name
-        try {
-          const decryptedName = await this.crypto.decryptFilename(
-            entry.encryptedName,
-            directoryId
-          );
-          if (this.isImageFile(decryptedName)) {
-            missingThumbs.push(entry);
-          }
-        } catch {
-          // Can't decrypt = skip
-          continue;
+        if (this.isImageFile(photo.name)) {
+          missingThumbs.push(photo);
         }
       }
     }
@@ -141,23 +116,13 @@ export class ThumbnailSyncService {
     }));
 
     // Generate thumbnails for each missing photo
-    for (const entry of missingThumbs) {
+    for (const photo of missingThumbs) {
       try {
-        const decryptedName = await this.crypto.decryptFilename(
-          entry.encryptedName,
-          directoryId
-        );
-        this._progress.update(p => ({ ...p, currentFile: decryptedName }));
+        this._progress.update(p => ({ ...p, currentFile: photo.name }));
 
-        await this.generateAndUploadThumbnails(
-          storage,
-          entry,
-          dirPath,
-          thumbDir,
-          directoryId
-        );
+        await this.generateAndUploadThumbnails(photo, thumbDir);
       } catch (err) {
-        console.warn(`[ThumbnailSync] Failed to generate thumbnail for ${entry.encryptedName}:`, err);
+        console.warn(`[ThumbnailSync] Failed to generate thumbnail for ${photo.encryptedName}:`, err);
       } finally {
         this._progress.update(p => ({ ...p, processed: p.processed + 1 }));
       }
@@ -168,26 +133,21 @@ export class ThumbnailSyncService {
    * Decrypt original photo, generate grid+preview thumbnails, encrypt and upload.
    */
   private async generateAndUploadThumbnails(
-    storage: StorageAdapter,
-    entry: FileEntry,
-    dirPath: string,
-    thumbDir: string,
-    directoryId: string
+    photo: { encryptedName: string; name: string; storagePath: string },
+    thumbDir: string
   ): Promise<void> {
-    // Read and decrypt the original photo
-    const filePath = `${dirPath}/${entry.encryptedName}`;
-    const encryptedData = await storage.readFile(filePath);
+    // Read and decrypt the original photo via SW
+    const encryptedData = await this.swClient.getFile(photo.storagePath);
     const decryptedData = await this.crypto.decryptFile(encryptedData);
 
-    // Determine the correct MIME type from the decrypted filename
-    const decryptedName = await this.crypto.decryptFilename(entry.encryptedName, directoryId);
-    const mimeType = this.getMimeType(decryptedName);
+    // Determine the correct MIME type
+    const mimeType = this.getMimeType(photo.name);
 
     // Create a Blob from the decrypted data
     let blob: Blob = new Blob([decryptedData], { type: mimeType });
 
     // Convert HEIC to JPEG if needed (for browsers without native HEIC support)
-    blob = await this.heicConverter.ensureDisplayable(blob, decryptedName);
+    blob = await this.heicConverter.ensureDisplayable(blob, photo.name);
 
     // Generate both thumbnail sizes
     const thumbs = await this.thumbnailService.generateAll(blob);
@@ -197,20 +157,20 @@ export class ThumbnailSyncService {
     const encryptedPreview = await this.crypto.encryptFile(thumbs.preview.data);
 
     // Ensure thumbnail directory exists
-    await this.ensureThumbDirectory(storage, thumbDir);
+    await this.ensureThumbDirectory(thumbDir);
 
-    // Upload thumbnails
-    const baseName = entry.encryptedName.slice(0, -4); // strip .c9r
-    await storage.writeFile(`${thumbDir}/${baseName}.grid`, encryptedGrid);
-    await storage.writeFile(`${thumbDir}/${baseName}.preview`, encryptedPreview);
+    // Upload thumbnails via SW
+    const baseName = photo.encryptedName.slice(0, -4); // strip .c9r
+    await this.swClient.writeFile(`${thumbDir}/${baseName}.grid`, encryptedGrid);
+    await this.swClient.writeFile(`${thumbDir}/${baseName}.preview`, encryptedPreview);
   }
 
   /**
-   * Check if a thumbnail file exists in storage.
+   * Check if a thumbnail file exists in storage (via SW).
    */
-  private async thumbnailExists(storage: StorageAdapter, path: string): Promise<boolean> {
+  private async thumbnailExists(path: string): Promise<boolean> {
     try {
-      return await storage.fileExists(path);
+      return await this.swClient.fileExists(path);
     } catch {
       return false;
     }
@@ -219,13 +179,13 @@ export class ThumbnailSyncService {
   /**
    * Ensure the thumbnail directory hierarchy exists.
    */
-  private async ensureThumbDirectory(storage: StorageAdapter, thumbDir: string): Promise<void> {
+  private async ensureThumbDirectory(thumbDir: string): Promise<void> {
     const segments = thumbDir.split('/');
     let path = '';
     for (const segment of segments) {
       path = path ? `${path}/${segment}` : segment;
       try {
-        await storage.createFolder(path);
+        await this.swClient.createFolder(path);
       } catch {
         /* may already exist */
       }

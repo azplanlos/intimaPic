@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { CryptoService } from '../crypto/crypto.service';
-import { VaultService } from '../vault/vault.service';
+import { SwClientService, SwError } from '../sw-client/sw-client.service';
 import { BlobLruCache } from './lru-cache';
 import { HeicConverterService } from '../upload/heic-converter.service';
 import { isImageFile, getMimeType } from '../image-types';
@@ -25,12 +25,14 @@ export interface PhotoItem {
   size: number;
 }
 
-/** IntimaPic metadata storage paths
- *  NOTE: Underscore prefix instead of dot – iCloud Drive won't sync dot-prefixed folders. */
-const THUMBS_DIR = '_intimapic/thumbs';
-
 /**
  * Service to list and decrypt photos within an album.
+ *
+ * Listing is delegated to the ServiceWorker (cached directory listings +
+ * filename decryption). Thumbnail/original fetching goes through the SW
+ * for encrypted cache access, then decryption happens locally in the
+ * main thread via CryptoService.
+ *
  * Supports three resolution tiers:
  * - grid: small thumbnail for gallery view (~300px)
  * - preview: FullHD image for lightbox/fullscreen (1920px)
@@ -39,56 +41,43 @@ const THUMBS_DIR = '_intimapic/thumbs';
 @Injectable({ providedIn: 'root' })
 export class PhotoService {
   private readonly crypto = inject(CryptoService);
-  private readonly vaultService = inject(VaultService);
+  private readonly swClient = inject(SwClientService);
   private readonly heicConverter = inject(HeicConverterService);
 
-  /** LRU cache for thumbnails (max 80 items ~ 80 * 50KB = ~4MB) */
+  /** LRU cache for decrypted thumbnail blob URLs (max 80 items ~ 80 * 50KB = ~4MB) */
   private readonly thumbnailCache = new BlobLruCache(80);
-  /** LRU cache for full-res images (max 5 items ~ 5 * 5MB = ~25MB) */
+  /** LRU cache for decrypted full-res blob URLs (max 5 items ~ 5 * 5MB = ~25MB) */
   private readonly fullResCache = new BlobLruCache(5);
 
   /**
    * List all photos in an album (by directory ID).
-   * Returns items with encrypted names resolved to cleartext.
+   * Uses the ServiceWorker for cached/network directory listing + filename decryption.
+   * Returns items with decrypted names and existing in-memory blob URLs.
    */
-  async listPhotos(directoryId: string): Promise<PhotoItem[]> {
-    const storage = this.vaultService.getStorage();
-    const dirPath = await this.crypto.encryptDirectoryId(directoryId);
-    const entries = await storage.listFiles(dirPath);
+  async listPhotos(directoryId: string, forceRefresh = false): Promise<PhotoItem[]> {
+    const { photos: entries } = await this.swClient.listPhotos(directoryId, forceRefresh);
 
-    const photos: PhotoItem[] = [];
-
-    for (const entry of entries) {
-      // Only process .c9r files (not directories)
-      if (!entry.isDirectory && entry.encryptedName.endsWith('.c9r')) {
-        try {
-          const name = await this.crypto.decryptFilename(entry.encryptedName, directoryId);
-          // Only include image files
-          if (this.isImageFile(name)) {
-            photos.push({
-              encryptedName: entry.encryptedName,
-              name,
-              storagePath: `${dirPath}/${entry.encryptedName}`,
-              thumbnailUrl: this.thumbnailCache.get(`grid:${entry.encryptedName}`) || null,
-              previewUrl: this.thumbnailCache.get(`preview:${entry.encryptedName}`) || null,
-              fullResUrl: this.fullResCache.get(`full:${entry.encryptedName}`) || null,
-              loading: false,
-              size: entry.size,
-            });
-          }
-        } catch {
-          // Skip files we can't decrypt
-          continue;
-        }
-      }
-    }
-
-    return photos;
+    return entries.map(entry => ({
+      encryptedName: entry.encryptedName,
+      name: entry.name,
+      storagePath: entry.storagePath,
+      thumbnailUrl: this.thumbnailCache.get(`grid:${entry.encryptedName}`) || null,
+      previewUrl: this.thumbnailCache.get(`preview:${entry.encryptedName}`) || null,
+      fullResUrl: this.fullResCache.get(`full:${entry.encryptedName}`) || null,
+      loading: false,
+      size: entry.size,
+    }));
   }
 
   /**
    * Decrypt a thumbnail (grid or preview size).
-   * Reads from _intimapic/thumbs/<directoryId>/<baseName>.<size>
+   *
+   * Flow:
+   * 1. Check in-memory LRU cache (decrypted blob URL)
+   * 2. Request encrypted thumbnail from SW (SW checks its IndexedDB cache, then network)
+   * 3. Decrypt locally via CryptoService
+   * 4. Create blob URL and cache in memory
+   *
    * Falls back to decrypting the original if thumbnail file doesn't exist.
    */
   async decryptThumbnail(photo: PhotoItem, directoryId: string, size: ThumbnailSize = 'grid', signal?: AbortSignal): Promise<string> {
@@ -96,13 +85,18 @@ export class PhotoService {
     const cached = this.thumbnailCache.get(cacheKey);
     if (cached) return cached;
 
-    const storage = this.vaultService.getStorage();
-    const thumbDirId = directoryId || '_root';
-    const baseName = photo.encryptedName.slice(0, -4); // strip .c9r
-    const thumbPath = `${THUMBS_DIR}/${thumbDirId}/${baseName}.${size}`;
-
     try {
-      const encryptedData = await storage.readFile(thumbPath, signal);
+      // Request encrypted thumbnail from SW (may come from IndexedDB cache or network)
+      const { data: encryptedData } = await this.swClient.getThumbnail(
+        photo.encryptedName,
+        directoryId,
+        size
+      );
+
+      // Check abort before expensive decrypt
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
+      // Decrypt locally
       const decryptedData = await this.crypto.decryptFile(encryptedData);
 
       const blob = new Blob([decryptedData], { type: 'image/jpeg' });
@@ -111,13 +105,17 @@ export class PhotoService {
       this.thumbnailCache.set(cacheKey, url);
       return url;
     } catch (err) {
-      // Re-throw abort errors so callers can handle cancellation
+      // Re-throw abort errors
       if (err instanceof DOMException && err.name === 'AbortError') {
         throw err;
       }
-      // Thumbnail file doesn't exist (legacy upload or sync issue).
-      // Fall back to decrypting the original.
-      return this.decryptOriginal(photo, signal);
+
+      // Thumbnail not found in SW (FILE_NOT_FOUND) → fall back to original
+      if (err instanceof SwError && (err.code === 'FILE_NOT_FOUND' || err.code === 'OFFLINE')) {
+        return this.decryptOriginal(photo, signal);
+      }
+
+      throw err;
     }
   }
 
@@ -131,17 +129,27 @@ export class PhotoService {
   /**
    * Decrypt the original full-resolution file.
    * Used for download or as fallback when thumbnails aren't available.
+   *
+   * Flow:
+   * 1. Check in-memory LRU cache
+   * 2. Request encrypted original from SW (always network, not cached by SW)
+   * 3. Decrypt locally
+   * 4. HEIC conversion if needed
+   * 5. Create blob URL and cache in memory
    */
   async decryptOriginal(photo: PhotoItem, signal?: AbortSignal): Promise<string> {
     const cacheKey = `full:${photo.encryptedName}`;
     const cached = this.fullResCache.get(cacheKey);
     if (cached) return cached;
 
-    const storage = this.vaultService.getStorage();
-    const encryptedData = await storage.readFile(photo.storagePath, signal);
+    // Read encrypted original via SW (no SW caching for originals – too large)
+    const encryptedData = await this.swClient.getFile(photo.storagePath);
+
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
     const decryptedData = await this.crypto.decryptFile(encryptedData);
 
-    const mimeType = this.getMimeType(photo.name);
+    const mimeType = getMimeType(photo.name);
     let blob = new Blob([decryptedData], { type: mimeType });
 
     // Convert HEIC to JPEG for browsers without native HEIC support
@@ -187,13 +195,5 @@ export class PhotoService {
    */
   clearFullResCache(): void {
     this.fullResCache.clear();
-  }
-
-  private isImageFile(name: string): boolean {
-    return isImageFile(name);
-  }
-
-  private getMimeType(name: string): string {
-    return getMimeType(name);
   }
 }
