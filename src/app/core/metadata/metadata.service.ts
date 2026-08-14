@@ -68,12 +68,16 @@ export class MetadataService {
     // Remove visibility change listener
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
 
-    // Flush any remaining changes
+    // Flush any remaining changes to remote storage
     await this.flush();
 
     this.dirty = false;
     this.cache.clear();
-    await this.store.clear();
+    // NOTE: Do NOT clear the IndexedDB store on lock.
+    // Metadata records (EXIF dates, ratings, favorites) should persist
+    // locally across sessions to avoid re-downloading originals for
+    // EXIF extraction on every vault open.
+    // The store is only cleared on vault deletion (reset).
   }
 
   // ─── EXIF Extraction ───────────────────────────────────────────
