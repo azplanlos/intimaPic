@@ -34,11 +34,11 @@ export class SwS3Adapter implements SwStorageAdapter {
 
   connect(token: string, config?: Record<string, unknown>): void {
     this.authToken = token;
-    if (config?.apiEndpoint && typeof config.apiEndpoint === 'string') {
-      this.apiEndpoint = config.apiEndpoint;
+    if (config?.['apiEndpoint'] && typeof config['apiEndpoint'] === 'string') {
+      this.apiEndpoint = config['apiEndpoint'];
     }
-    if (config?.rootPath && typeof config.rootPath === 'string') {
-      this.rootPath = config.rootPath.endsWith('/') ? config.rootPath : `${config.rootPath}/`;
+    if (config?.['rootPath'] && typeof config['rootPath'] === 'string') {
+      this.rootPath = config['rootPath'].endsWith('/') ? config['rootPath'] : `${config['rootPath']}/`;
     }
     this.connected = true;
   }
