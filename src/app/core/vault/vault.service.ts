@@ -231,8 +231,13 @@ export class VaultService {
           this.vaultConfigService.MASTERKEY_FILENAME
         );
       } else {
-        // Offline: Use cached vault meta from SW
-        const cached = await this.swClient.getCachedVaultMeta(vault.id);
+        // Offline: Use cached vault meta from SW (gracefully handle SW not ready)
+        let cached: { masterkeyFile: ArrayBuffer; vaultConfig?: ArrayBuffer } | null = null;
+        try {
+          cached = await this.swClient.getCachedVaultMeta(vault.id);
+        } catch {
+          // SW not active – can't do offline unlock
+        }
         if (!cached) {
           this._error.set('Offline und kein lokaler Cache vorhanden. Bitte zuerst online den Tresor öffnen.');
           return false;
@@ -252,10 +257,16 @@ export class VaultService {
         return false;
       }
 
-      // Transfer keys to ServiceWorker
+      // Transfer keys to ServiceWorker (non-blocking: unlock must succeed
+      // even if SW is not yet active – keys will be re-transferred on demand)
       const keys = this.cryptoService.getMasterKeys();
       if (keys) {
-        await this.swClient.initKeys(keys.encryptionKey, keys.macKey, vault.id);
+        try {
+          await this.swClient.initKeys(keys.encryptionKey, keys.macKey, vault.id);
+        } catch {
+          // SW not ready yet – that's fine. The SwClientService will
+          // re-transfer keys via NEED_KEYS when the SW becomes active.
+        }
 
         // Register this service as key provider for re-transfer
         this.swClient.setKeyProvider({
@@ -266,7 +277,11 @@ export class VaultService {
 
       // Transfer auth token to SW (if online and using OneDrive/S3)
       if (navigator.onLine && this.activeAdapter) {
-        await this.transferAuthTokenToSw(settings);
+        try {
+          await this.transferAuthTokenToSw(settings);
+        } catch {
+          // Non-critical: SW will request token via NEED_TOKEN when needed
+        }
       }
 
       // Ensure vault settings file exists and sync name (only if online)
