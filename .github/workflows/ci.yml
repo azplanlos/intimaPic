@@ -31,11 +31,11 @@ jobs:
       - name: Run unit tests
         run: npx ng test --no-watch --browsers=ChromeHeadless
 
-      - name: Build ServiceWorker
-        run: node build-sw.mjs
-
       - name: Build Angular app
         run: npx ng build --configuration=production
+
+      - name: Build ServiceWorker
+        run: node build-sw.mjs
 
       - name: Verify ServiceWorker bundle exists
         run: test -f dist/intimapic/browser/sw.js && echo "✅ sw.js exists ($(wc -c < dist/intimapic/browser/sw.js) bytes)" || (echo "❌ sw.js missing!" && exit 1)
