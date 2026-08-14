@@ -3,6 +3,7 @@ import { CryptoService } from '../crypto/crypto.service';
 import { ThumbnailService } from './thumbnail.service';
 import { HeicConverterService } from './heic-converter.service';
 import { AlbumService, type Album } from '../album/album.service';
+import { VaultService } from '../vault/vault.service';
 import { SwClientService } from '../sw-client/sw-client.service';
 
 export interface ThumbnailSyncProgress {
@@ -37,6 +38,7 @@ export class ThumbnailSyncService {
   private readonly thumbnailService = inject(ThumbnailService);
   private readonly heicConverter = inject(HeicConverterService);
   private readonly albumService = inject(AlbumService);
+  private readonly vaultService = inject(VaultService);
   private readonly swClient = inject(SwClientService);
 
   private readonly _progress = signal<ThumbnailSyncProgress>({
@@ -78,8 +80,8 @@ export class ThumbnailSyncService {
 
   /**
    * Sync thumbnails for a single directory (album or root).
-   * @param directoryId - Cryptomator directory ID (empty string for root)
-   * @param thumbDirKey - Key used in _intimapic/thumbs/ (directoryId or '_root')
+   * Uses a single listFiles call on the thumbs directory to batch-check
+   * which thumbnails already exist (instead of one fileExists per photo).
    */
   async syncDirectory(directoryId: string, thumbDirKey: string): Promise<void> {
     // Use SW to list photos (already decrypted names)
@@ -92,16 +94,26 @@ export class ThumbnailSyncService {
       return;
     }
 
-    // Determine which photos are missing thumbnails
+    if (photos.length === 0) return;
+
+    // Batch-check: List existing thumbnails in one request instead of N fileExists calls
     const thumbDir = `${THUMBS_DIR}/${thumbDirKey}`;
+    let existingThumbs: Set<string>;
+    try {
+      existingThumbs = await this.listThumbDirectory(thumbDir);
+    } catch {
+      // Directory doesn't exist yet – all thumbs are missing
+      existingThumbs = new Set();
+    }
+
+    // Determine which photos are missing thumbnails
     const missingThumbs: Array<{ encryptedName: string; name: string; storagePath: string }> = [];
 
     for (const photo of photos) {
       const baseName = photo.encryptedName.slice(0, -4); // strip .c9r
-      const gridPath = `${thumbDir}/${baseName}.grid`;
+      const gridFileName = `${baseName}.grid`;
 
-      const exists = await this.thumbnailExists(gridPath);
-      if (!exists) {
+      if (!existingThumbs.has(gridFileName)) {
         if (this.isImageFile(photo.name)) {
           missingThumbs.push(photo);
         }
@@ -127,6 +139,16 @@ export class ThumbnailSyncService {
         this._progress.update(p => ({ ...p, processed: p.processed + 1 }));
       }
     }
+  }
+
+  /**
+   * List all files in a thumbnail directory (single request via StorageAdapter).
+   * Returns a Set of filenames for O(1) lookup.
+   */
+  private async listThumbDirectory(thumbDir: string): Promise<Set<string>> {
+    const storage = this.vaultService.getStorage();
+    const entries = await storage.listFiles(thumbDir);
+    return new Set(entries.map(e => e.encryptedName));
   }
 
   /**
@@ -163,17 +185,6 @@ export class ThumbnailSyncService {
     const baseName = photo.encryptedName.slice(0, -4); // strip .c9r
     await this.swClient.writeFile(`${thumbDir}/${baseName}.grid`, encryptedGrid);
     await this.swClient.writeFile(`${thumbDir}/${baseName}.preview`, encryptedPreview);
-  }
-
-  /**
-   * Check if a thumbnail file exists in storage (via SW).
-   */
-  private async thumbnailExists(path: string): Promise<boolean> {
-    try {
-      return await this.swClient.fileExists(path);
-    } catch {
-      return false;
-    }
   }
 
   /**
