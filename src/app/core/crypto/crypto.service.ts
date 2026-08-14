@@ -34,6 +34,14 @@ export class CryptoService {
     return this.masterKeys !== null;
   }
 
+  /**
+   * Get the current master keys (for transferring to ServiceWorker).
+   * Returns null if the vault is locked.
+   */
+  getMasterKeys(): MasterKeys | null {
+    return this.masterKeys;
+  }
+
   // ─── Vault Creation ────────────────────────────────────────────────
 
   /**

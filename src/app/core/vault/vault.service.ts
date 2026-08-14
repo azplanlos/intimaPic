@@ -6,6 +6,7 @@ import { BiometricCredentialStore } from '../biometric/biometric-credential.stor
 import { StorageAdapterFactory } from '../storage/storage-adapter.factory';
 import { VaultRegistryService } from './vault-registry.service';
 import { VaultSettingsService } from './vault-settings.service';
+import { SwClientService } from '../sw-client/sw-client.service';
 import type { StorageAdapter } from '../storage/storage-adapter.interface';
 import type { StorageSettings } from '../crypto/crypto.models';
 
@@ -28,6 +29,7 @@ export class VaultService {
   private readonly storageFactory = inject(StorageAdapterFactory);
   private readonly registry = inject(VaultRegistryService);
   private readonly vaultSettings = inject(VaultSettingsService);
+  private readonly swClient = inject(SwClientService);
   private readonly injector = inject(Injector);
 
   // ─── State (Signals) ──────────────────────────────────────────────
@@ -207,6 +209,7 @@ export class VaultService {
 
   /**
    * Unlock the active vault by connecting to storage and unwrapping master keys.
+   * Supports offline unlock via locally cached masterkey.cryptomator.
    */
   async unlockVault(password: string): Promise<boolean> {
     try {
@@ -219,29 +222,59 @@ export class VaultService {
       }
 
       const settings = vault.storageSettings;
+      let masterkeyData: ArrayBuffer;
 
-      // 1. Connect to storage
-      this.activeAdapter = await this.storageFactory.connectAdapter(settings);
+      if (navigator.onLine) {
+        // Online: Connect to storage and read masterkey
+        this.activeAdapter = await this.storageFactory.connectAdapter(settings);
+        masterkeyData = await this.activeAdapter.readFile(
+          this.vaultConfigService.MASTERKEY_FILENAME
+        );
+      } else {
+        // Offline: Use cached vault meta from SW
+        const cached = await this.swClient.getCachedVaultMeta(vault.id);
+        if (!cached) {
+          this._error.set('Offline und kein lokaler Cache vorhanden. Bitte zuerst online den Tresor öffnen.');
+          return false;
+        }
+        masterkeyData = cached.masterkeyFile;
+      }
 
-      // 2. Read masterkey.cryptomator
-      const masterkeyData = await this.activeAdapter.readFile(
-        this.vaultConfigService.MASTERKEY_FILENAME
-      );
-
-      // 3. Unlock vault with password (AES Key Unwrap fails deterministically on wrong PW)
+      // Unlock vault with password (AES Key Unwrap fails deterministically on wrong PW)
       const success = await this.vaultConfigService.unlockFromBytes(password, masterkeyData);
 
       if (!success) {
         this._error.set('Falsches Passwort. Bitte erneut versuchen.');
-        await this.activeAdapter.disconnect();
-        this.activeAdapter = null;
+        if (this.activeAdapter) {
+          await this.activeAdapter.disconnect();
+          this.activeAdapter = null;
+        }
         return false;
       }
 
-      // 4. Ensure vault settings file exists and sync name
-      await this.syncVaultSettings(vault.id, vault.name);
+      // Transfer keys to ServiceWorker
+      const keys = this.cryptoService.getMasterKeys();
+      if (keys) {
+        await this.swClient.initKeys(keys.encryptionKey, keys.macKey, vault.id);
 
-      // 5. Initialize metadata service (load & merge local+remote metadata)
+        // Register this service as key provider for re-transfer
+        this.swClient.setKeyProvider({
+          getMasterKeys: () => this.cryptoService.getMasterKeys(),
+          getVaultId: () => this.registry.activeVault()?.id ?? null,
+        });
+      }
+
+      // Transfer auth token to SW (if online and using OneDrive/S3)
+      if (navigator.onLine && this.activeAdapter) {
+        await this.transferAuthTokenToSw(settings);
+      }
+
+      // Ensure vault settings file exists and sync name (only if online)
+      if (navigator.onLine) {
+        await this.syncVaultSettings(vault.id, vault.name);
+      }
+
+      // Initialize metadata service (load & merge local+remote metadata)
       const { MetadataService } = await import('../metadata/metadata.service');
       const metadataService = this.injector.get(MetadataService);
       await metadataService.initialize();
@@ -251,6 +284,30 @@ export class VaultService {
     } catch (err) {
       this._error.set(err instanceof Error ? err.message : 'Unlock failed');
       return false;
+    }
+  }
+
+  /**
+   * Transfer the current auth token to the ServiceWorker.
+   */
+  private async transferAuthTokenToSw(settings: StorageSettings): Promise<void> {
+    try {
+      const provider = settings.provider;
+      if (provider === 'icloud') return; // iCloud doesn't use SW storage
+
+      // Extract token from the active adapter or settings
+      const config = settings.config as Record<string, unknown>;
+      const token = (config?.['accessToken'] as string) ?? '';
+      if (!token) return;
+
+      await this.swClient.setAuthToken(
+        provider,
+        token,
+        Date.now() + 3600 * 1000, // 1 hour default
+        { rootPath: settings.rootPath, ...config }
+      );
+    } catch {
+      // Non-critical
     }
   }
 
@@ -356,6 +413,13 @@ export class VaultService {
     const { PhotoService } = await import('../album/photo.service');
     const photoService = this.injector.get(PhotoService);
     photoService.clearCache();
+
+    // Lock the ServiceWorker (zeroizes keys, clears tokens)
+    try {
+      await this.swClient.lock();
+    } catch {
+      // SW might not be ready – non-critical
+    }
 
     this.cryptoService.lockVault();
     if (this.activeAdapter) {
