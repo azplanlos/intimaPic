@@ -312,44 +312,30 @@ export class UnlockVaultComponent implements OnInit {
   }
 
   private async postUnlock(): Promise<void> {
+    // Wait for storage adapter to be connected (may be connecting in background
+    // if the cache-based unlock path was used on slow network)
+    await this.vaultService.storageReady;
+
+    // Scan root for unsorted photos (from iOS Shortcuts/Cryptomator import)
+    let hasUnsorted = false;
+    try {
+      hasUnsorted = await this.importScanService.scanRoot();
+    } catch {
+      // Non-critical: scan failure just means we go to gallery
+    }
+
     this.loading.set(false);
     this.biometricLoading.set(false);
 
-    // Navigate to gallery immediately — don't block on import scan.
-    // The scan runs in the background and redirects to import-wizard if needed.
-    this.router.navigate(['/gallery']);
-
-    // Run import scan in background (non-blocking)
-    this.runDeferredImportScan();
-  }
-
-  /**
-   * Run the import scan in the background after navigation.
-   * If unsorted photos are found, redirect to the import wizard.
-   * Otherwise, start thumbnail sync.
-   */
-  private runDeferredImportScan(): void {
-    queueMicrotask(async () => {
-      try {
-        // Wait for storage adapter to be connected (may be connecting in background
-        // if the cache-based unlock path was used on slow network)
-        await this.vaultService.storageReady;
-
-        const hasUnsorted = await this.importScanService.scanRoot();
-
-        if (hasUnsorted) {
-          // Redirect to import wizard — don't start thumbnail sync
-          // (OneDrive throttle contention with parallel operations)
-          this.router.navigate(['/import-wizard']);
-        } else {
-          // No unsorted photos — safe to start thumbnail sync in background
-          this.thumbnailSync.syncAll();
-        }
-      } catch {
-        // Non-critical: scan failure just means we don't redirect to import wizard.
-        // User can still use the gallery normally. Start thumbnail sync anyway.
-        this.thumbnailSync.syncAll();
-      }
-    });
+    if (hasUnsorted) {
+      // Don't start thumbnail sync now — the import wizard will trigger it
+      // after the user has finished sorting. Running it in parallel causes
+      // OneDrive throttle contention (409 conflicts / blocked requests).
+      this.router.navigate(['/import-wizard']);
+    } else {
+      // No unsorted photos — safe to start thumbnail sync in background
+      this.thumbnailSync.syncAll();
+      this.router.navigate(['/gallery']);
+    }
   }
 }
