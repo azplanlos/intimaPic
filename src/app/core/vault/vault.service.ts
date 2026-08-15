@@ -49,6 +49,14 @@ export class VaultService {
 
   private activeAdapter: StorageAdapter | null = null;
 
+  /**
+   * Promise that resolves when the storage adapter is connected and ready.
+   * Resolves immediately if the adapter was connected synchronously during unlock.
+   * Resolves later if the adapter is being connected in the background (cache path).
+   * Services that need storage access (e.g. ImportScanService) can await this.
+   */
+  storageReady: Promise<void> = Promise.resolve();
+
   // ─── Initialization ───────────────────────────────────────────────
 
   /**
@@ -255,6 +263,11 @@ export class VaultService {
         }
         masterkeyData = result.data;
         usedCache = result.fromCache;
+
+        // If network succeeded, adapter is already connected → storageReady resolves immediately
+        if (!usedCache && this.activeAdapter) {
+          this.storageReady = Promise.resolve();
+        }
       } else {
         // Fully offline: use cached vault meta from SW
         const cached = await this.getCachedMasterkeyData(vault.id);
@@ -416,9 +429,10 @@ export class VaultService {
   /**
    * Connect storage adapter in the background (fire-and-forget).
    * Used when cache was used for unlock but we still want a connection for later ops.
+   * Sets this.storageReady so callers can await the connection.
    */
   private connectStorageInBackground(settings: StorageSettings): void {
-    this.storageFactory.connectAdapter(settings).then(adapter => {
+    this.storageReady = this.storageFactory.connectAdapter(settings).then(adapter => {
       this.activeAdapter = adapter;
       // Transfer token to SW once connected
       this.transferAuthTokenToSw(settings).catch(() => {});
@@ -536,6 +550,7 @@ export class VaultService {
       try {
         this.activeAdapter = await this.connectStorageWithTimeout(settings, this.UNLOCK_NETWORK_TIMEOUT_MS);
         storageConnected = true;
+        this.storageReady = Promise.resolve();
       } catch {
         // Storage connection failed or timed out.
         // We can still proceed with biometric unlock using cached keys.
