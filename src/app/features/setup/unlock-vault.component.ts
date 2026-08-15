@@ -312,21 +312,40 @@ export class UnlockVaultComponent implements OnInit {
   }
 
   private async postUnlock(): Promise<void> {
-    // Scan root for unsorted photos (from iOS Shortcuts/Cryptomator import)
-    const hasUnsorted = await this.importScanService.scanRoot();
-
     this.loading.set(false);
     this.biometricLoading.set(false);
 
-    if (hasUnsorted) {
-      // Don't start thumbnail sync now — the import wizard will trigger it
-      // after the user has finished sorting. Running it in parallel causes
-      // OneDrive throttle contention (409 conflicts / blocked requests).
-      this.router.navigate(['/import-wizard']);
-    } else {
-      // No unsorted photos — safe to start thumbnail sync in background
-      this.thumbnailSync.syncAll();
-      this.router.navigate(['/gallery']);
-    }
+    // Navigate to gallery immediately — don't block on import scan.
+    // The scan runs in the background and redirects to import-wizard if needed.
+    this.router.navigate(['/gallery']);
+
+    // Run import scan in background (non-blocking)
+    this.runDeferredImportScan();
+  }
+
+  /**
+   * Run the import scan in the background after navigation.
+   * If unsorted photos are found, redirect to the import wizard.
+   * Otherwise, start thumbnail sync.
+   */
+  private runDeferredImportScan(): void {
+    queueMicrotask(async () => {
+      try {
+        const hasUnsorted = await this.importScanService.scanRoot();
+
+        if (hasUnsorted) {
+          // Redirect to import wizard — don't start thumbnail sync
+          // (OneDrive throttle contention with parallel operations)
+          this.router.navigate(['/import-wizard']);
+        } else {
+          // No unsorted photos — safe to start thumbnail sync in background
+          this.thumbnailSync.syncAll();
+        }
+      } catch {
+        // Non-critical: scan failure just means we don't redirect to import wizard.
+        // User can still use the gallery normally. Start thumbnail sync anyway.
+        this.thumbnailSync.syncAll();
+      }
+    });
   }
 }

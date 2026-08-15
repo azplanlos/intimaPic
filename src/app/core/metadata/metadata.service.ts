@@ -35,26 +35,64 @@ export class MetadataService {
     }
   };
 
+  /**
+   * Promise that resolves when background remote merge completes.
+   * Exposed for testing — production code should NOT await this during unlock.
+   * @internal
+   */
+  remoteMergeComplete: Promise<void> = Promise.resolve();
+
   // ─── Lifecycle ─────────────────────────────────────────────────
 
-  /** Called when vault is opened. Loads local + remote metadata and merges. */
+  /** Called when vault is opened. Loads local metadata immediately, then merges remote in background. */
   async initialize(): Promise<void> {
     await this.store.open();
 
+    // Load local records first — this is instant (IndexedDB)
     const localRecords = await this.store.getAll();
-    const remoteRecords = await this.downloadRemoteRecords();
 
-    const merged = this.mergeRecords(localRecords, remoteRecords);
-
-    await this.store.putBatch(merged);
-
+    // Populate in-memory cache immediately so the gallery can render
     this.cache.clear();
-    for (const record of merged) {
+    for (const record of localRecords) {
       this.cache.set(record.photoId, record);
     }
 
     // Register visibility change listener for immediate flush on page hide
     document.addEventListener('visibilitychange', this.onVisibilityChange);
+
+    // Merge remote records in the background (non-blocking)
+    this.remoteMergeComplete = this.mergeRemoteInBackground(localRecords);
+  }
+
+  /**
+   * Download remote metadata and merge with local records in the background.
+   * Does not block the UI — the gallery works with local data in the meantime.
+   */
+  private async mergeRemoteInBackground(localRecords: MetadataRecord[]): Promise<void> {
+    try {
+      const remoteRecords = await this.downloadRemoteRecords();
+
+      if (remoteRecords.length === 0) return; // Nothing to merge
+
+      const merged = this.mergeRecords(localRecords, remoteRecords);
+
+      // Only update store and cache if there were actual changes from remote
+      const hasChanges = merged.length !== localRecords.length ||
+        merged.some(m => {
+          const local = this.cache.get(m.photoId);
+          return !local || local.updatedAt !== m.updatedAt;
+        });
+
+      if (hasChanges) {
+        await this.store.putBatch(merged);
+        for (const record of merged) {
+          this.cache.set(record.photoId, record);
+        }
+      }
+    } catch {
+      // Non-critical: remote merge failure doesn't affect local operation.
+      // Will retry on next vault open.
+    }
   }
 
   /** Called when vault is locked. Flush pending, clear cache and store. */

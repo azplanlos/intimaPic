@@ -66,6 +66,28 @@ export class StorageAdapterFactory {
   }
 
   /**
+   * Configure and connect an adapter with a timeout.
+   * If the connection doesn't complete within timeoutMs, throws an error.
+   * Useful during unlock to avoid indefinite waits on slow networks.
+   */
+  async connectAdapterWithTimeout(settings: StorageSettings, timeoutMs: number): Promise<StorageAdapter> {
+    return new Promise<StorageAdapter>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`Storage connection timed out after ${timeoutMs}ms`)),
+        timeoutMs
+      );
+
+      this.connectAdapter(settings).then(adapter => {
+        clearTimeout(timer);
+        resolve(adapter);
+      }).catch(err => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+  }
+
+  /**
    * Get the currently active (connected) adapter.
    * Primarily used for iCloud Drive (which stays in the main thread).
    */

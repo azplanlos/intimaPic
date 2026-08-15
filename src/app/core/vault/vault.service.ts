@@ -223,9 +223,14 @@ export class VaultService {
 
   // ─── Vault Unlock ─────────────────────────────────────────────────
 
+  /** Timeout for network operations during unlock (ms). If exceeded, cached data is used. */
+  private readonly UNLOCK_NETWORK_TIMEOUT_MS = 4000;
+
   /**
    * Unlock the active vault by connecting to storage and unwrapping master keys.
-   * Supports offline unlock via locally cached masterkey.cryptomator.
+   * Uses a "race against cache" strategy: on slow connections the locally cached
+   * masterkey.cryptomator is used so the user doesn't wait for the network.
+   * Post-unlock tasks (settings sync, metadata merge) run in the background.
    */
   async unlockVault(password: string): Promise<boolean> {
     try {
@@ -239,26 +244,26 @@ export class VaultService {
 
       const settings = vault.storageSettings;
       let masterkeyData: ArrayBuffer;
+      let usedCache = false;
 
       if (navigator.onLine) {
-        // Online: Connect to storage and read masterkey
-        this.activeAdapter = await this.storageFactory.connectAdapter(settings);
-        masterkeyData = await this.activeAdapter.readFile(
-          this.vaultConfigService.MASTERKEY_FILENAME
-        );
-      } else {
-        // Offline: Use cached vault meta from SW (gracefully handle SW not ready)
-        let cached: { masterkeyFile: ArrayBuffer; vaultConfig?: ArrayBuffer } | null = null;
-        try {
-          cached = await this.swClient.getCachedVaultMeta(vault.id);
-        } catch {
-          // SW not active – can't do offline unlock
+        // Race: try network with timeout, fall back to cache if slow/unavailable
+        const result = await this.raceMasterkeyFetch(vault.id, settings);
+        if (!result) {
+          this._error.set('Masterkey konnte weder vom Netzwerk noch aus dem Cache geladen werden.');
+          return false;
         }
+        masterkeyData = result.data;
+        usedCache = result.fromCache;
+      } else {
+        // Fully offline: use cached vault meta from SW
+        const cached = await this.getCachedMasterkeyData(vault.id);
         if (!cached) {
           this._error.set('Offline und kein lokaler Cache vorhanden. Bitte zuerst online den Tresor öffnen.');
           return false;
         }
-        masterkeyData = cached.masterkeyFile;
+        masterkeyData = cached;
+        usedCache = true;
       }
 
       // Unlock vault with password (AES Key Unwrap fails deterministically on wrong PW)
@@ -297,7 +302,6 @@ export class VaultService {
               const vault = this.registry.activeVault();
               if (!vault) return null;
               await this.transferAuthTokenToSw(vault.storageSettings);
-              // Return the token we just transferred
               if (provider === 'onedrive') {
                 const { OneDriveAdapter } = await import('../storage/onedrive-adapter.service');
                 const adapter = this.injector.get(OneDriveAdapter);
@@ -312,7 +316,7 @@ export class VaultService {
         });
       }
 
-      // Transfer auth token to SW (if online and using OneDrive/S3)
+      // Transfer auth token to SW (if online and adapter is connected)
       if (navigator.onLine && this.activeAdapter) {
         try {
           await this.transferAuthTokenToSw(settings);
@@ -321,22 +325,149 @@ export class VaultService {
         }
       }
 
-      // Ensure vault settings file exists and sync name (only if online)
-      if (navigator.onLine) {
-        await this.syncVaultSettings(vault.id, vault.name);
-      }
-
-      // Initialize metadata service (load & merge local+remote metadata)
-      const { MetadataService } = await import('../metadata/metadata.service');
-      const metadataService = this.injector.get(MetadataService);
-      await metadataService.initialize();
-
+      // ─── Mark as unlocked IMMEDIATELY ────────────────────────────────
+      // Background tasks (settings sync, metadata) run non-blocking so the
+      // user can navigate to the gallery without waiting for the network.
       this._status.set('unlocked');
+
+      // ─── Non-blocking background tasks ───────────────────────────────
+      this.runPostUnlockBackgroundTasks(vault.id, vault.name, usedCache, settings);
+
       return true;
     } catch (err) {
       this._error.set(err instanceof Error ? err.message : 'Unlock failed');
       return false;
     }
+  }
+
+  /**
+   * Race the network masterkey fetch against the local SW cache.
+   * Returns the masterkey data from whichever source responds first.
+   * On slow connections, the cache wins after UNLOCK_NETWORK_TIMEOUT_MS.
+   */
+  private async raceMasterkeyFetch(
+    vaultId: string,
+    settings: StorageSettings
+  ): Promise<{ data: ArrayBuffer; fromCache: boolean } | null> {
+    // Start both in parallel
+    const networkPromise = this.fetchMasterkeyFromNetwork(settings);
+    const cachePromise = this.getCachedMasterkeyData(vaultId);
+
+    // Create a timeout that resolves as "timed out" marker
+    const timeout = new Promise<'TIMEOUT'>(resolve =>
+      setTimeout(() => resolve('TIMEOUT'), this.UNLOCK_NETWORK_TIMEOUT_MS)
+    );
+
+    // Try network first, but with timeout
+    const networkOrTimeout = Promise.race([networkPromise, timeout]);
+    const result = await networkOrTimeout;
+
+    if (result !== 'TIMEOUT' && result !== null) {
+      // Network responded in time
+      return { data: result, fromCache: false };
+    }
+
+    // Network was slow or failed — try cache
+    const cached = await cachePromise;
+    if (cached) {
+      // Start storage connection in background so it's ready for later operations
+      this.connectStorageInBackground(settings);
+      return { data: cached, fromCache: true };
+    }
+
+    // No cache available — must wait for network (first-time unlock scenario)
+    if (result === 'TIMEOUT') {
+      // Network is still in-flight, wait for it (no choice without cache)
+      const networkResult = await networkPromise;
+      if (networkResult) {
+        return { data: networkResult, fromCache: false };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Fetch masterkey from network via storage adapter.
+   * Returns null on failure (instead of throwing).
+   */
+  private async fetchMasterkeyFromNetwork(settings: StorageSettings): Promise<ArrayBuffer | null> {
+    try {
+      this.activeAdapter = await this.storageFactory.connectAdapter(settings);
+      return await this.activeAdapter.readFile(this.vaultConfigService.MASTERKEY_FILENAME);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Get cached masterkey data from the ServiceWorker's IndexedDB.
+   * Returns null if not available.
+   */
+  private async getCachedMasterkeyData(vaultId: string): Promise<ArrayBuffer | null> {
+    try {
+      const cached = await this.swClient.getCachedVaultMeta(vaultId);
+      return cached?.masterkeyFile ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Connect storage adapter in the background (fire-and-forget).
+   * Used when cache was used for unlock but we still want a connection for later ops.
+   */
+  private connectStorageInBackground(settings: StorageSettings): void {
+    this.storageFactory.connectAdapter(settings).then(adapter => {
+      this.activeAdapter = adapter;
+      // Transfer token to SW once connected
+      this.transferAuthTokenToSw(settings).catch(() => {});
+    }).catch(() => {
+      // Will retry on next operation that needs storage
+    });
+  }
+
+  /**
+   * Run post-unlock housekeeping tasks in the background.
+   * These do NOT block the unlock — the vault is already usable.
+   */
+  private runPostUnlockBackgroundTasks(
+    vaultId: string,
+    vaultName: string,
+    usedCache: boolean,
+    settings: StorageSettings
+  ): void {
+    // Use queueMicrotask to ensure this runs after the current call stack
+    // but without blocking the UI or navigation.
+    queueMicrotask(async () => {
+      try {
+        // Sync vault settings (only if online and adapter is available)
+        if (navigator.onLine && this.activeAdapter) {
+          await this.syncVaultSettings(vaultId, vaultName);
+        }
+      } catch {
+        // Non-critical
+      }
+
+      try {
+        // Initialize metadata service (local-first, remote merge in background)
+        const { MetadataService } = await import('../metadata/metadata.service');
+        const metadataService = this.injector.get(MetadataService);
+        await metadataService.initialize();
+      } catch {
+        // Non-critical — metadata will be initialized on next access
+      }
+
+      // If we used cache for masterkey, the network fetch may still be completing.
+      // Once the adapter is connected, transfer the auth token.
+      if (usedCache && navigator.onLine && this.activeAdapter) {
+        try {
+          await this.transferAuthTokenToSw(settings);
+        } catch {
+          // Non-critical
+        }
+      }
+    });
   }
 
   /**
@@ -380,6 +511,11 @@ export class VaultService {
   /**
    * Unlock the vault using biometric authentication (FaceID/Windows Hello).
    * PRF extension provides a device-bound KEK to unwrap the master keys.
+   *
+   * NOTE: The storage connection MUST happen before biometric auth because
+   * the user-gesture is consumed by WebAuthn. If MSAL needs an interactive
+   * popup (expired refresh token), it must fire while the gesture is active.
+   * However, post-auth tasks (settings sync, metadata) run in the background.
    */
   async unlockWithBiometric(): Promise<boolean> {
     try {
@@ -394,36 +530,95 @@ export class VaultService {
       const settings = vault.storageSettings;
 
       // 1. Connect to storage FIRST – while the user-gesture is still active.
-      //    This ensures that if an interactive MSAL popup is needed (expired
-      //    refresh token), the browser allows the popup because we're still
-      //    within the original click event's trust window.
-      //    If we did biometric auth first (WebAuthn), the async authenticator
-      //    call consumes the user-gesture, causing popup blockers to fire.
-      this.activeAdapter = await this.storageFactory.connectAdapter(settings);
+      //    Use timeout: if connection is slow but we have cached credentials,
+      //    we proceed with biometric auth anyway.
+      let storageConnected = false;
+      try {
+        this.activeAdapter = await this.connectStorageWithTimeout(settings, this.UNLOCK_NETWORK_TIMEOUT_MS);
+        storageConnected = true;
+      } catch {
+        // Storage connection failed or timed out.
+        // We can still proceed with biometric unlock using cached keys.
+        // Storage will be connected in background afterwards.
+      }
 
       // 2. Authenticate biometrically (loads master keys via PRF)
       const authSuccess = await this.biometricAuth.authenticate(vault.id);
       if (!authSuccess) {
         this._error.set('Biometrische Authentifizierung fehlgeschlagen.');
-        await this.activeAdapter.disconnect();
-        this.activeAdapter = null;
+        if (this.activeAdapter) {
+          await this.activeAdapter.disconnect();
+          this.activeAdapter = null;
+        }
         return false;
       }
 
-      // 3. Ensure vault settings file exists and sync name
-      await this.syncVaultSettings(vault.id, vault.name);
+      // 3. Transfer keys to SW
+      const keys = this.cryptoService.getMasterKeys();
+      if (keys) {
+        try {
+          await this.swClient.initKeys(keys.encryptionKey, keys.macKey, vault.id);
+        } catch {
+          // SW not ready – fine
+        }
 
-      // 4. Initialize metadata service (load & merge local+remote metadata)
-      const { MetadataService } = await import('../metadata/metadata.service');
-      const metadataService = this.injector.get(MetadataService);
-      await metadataService.initialize();
+        this.swClient.setKeyProvider({
+          getMasterKeys: () => this.cryptoService.getMasterKeys(),
+          getVaultId: () => this.registry.activeVault()?.id ?? null,
+        });
 
+        this.swClient.setTokenProvider({
+          refreshToken: async (provider: 'onedrive' | 's3') => {
+            try {
+              const v = this.registry.activeVault();
+              if (!v) return null;
+              await this.transferAuthTokenToSw(v.storageSettings);
+              if (provider === 'onedrive') {
+                const { OneDriveAdapter } = await import('../storage/onedrive-adapter.service');
+                const adapter = this.injector.get(OneDriveAdapter);
+                const t = adapter.getAccessToken();
+                return t ? { token: t, expiresAt: Date.now() + 3600_000 } : null;
+              }
+              return null;
+            } catch {
+              return null;
+            }
+          },
+        });
+      }
+
+      // Transfer auth token to SW (if connected)
+      if (storageConnected && this.activeAdapter) {
+        try {
+          await this.transferAuthTokenToSw(settings);
+        } catch {
+          // Non-critical
+        }
+      }
+
+      // ─── Mark as unlocked IMMEDIATELY ────────────────────────────────
       this._status.set('unlocked');
+
+      // ─── Non-blocking background tasks ───────────────────────────────
+      this.runPostUnlockBackgroundTasks(vault.id, vault.name, !storageConnected, settings);
+
+      // If storage wasn't connected, try in background
+      if (!storageConnected) {
+        this.connectStorageInBackground(settings);
+      }
+
       return true;
     } catch (err) {
       this._error.set(err instanceof Error ? err.message : 'Biometric unlock failed');
       return false;
     }
+  }
+
+  /**
+   * Connect to storage with a timeout. Throws if connection doesn't complete in time.
+   */
+  private async connectStorageWithTimeout(settings: StorageSettings, timeoutMs: number): Promise<StorageAdapter> {
+    return this.storageFactory.connectAdapterWithTimeout(settings, timeoutMs);
   }
 
   /**
