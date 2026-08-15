@@ -155,3 +155,9 @@ body { margin: 0; font-family: Roboto, "Helvetica Neue", sans-serif; }
   color: rgba(255, 255, 255, 0.92);
   white-space: normal;
 }
+
+
+/* Album picker dialog must appear above PhotoSwipe lightbox (z-index: 100000) */
+.cdk-overlay-container.cdk-overlay-container {
+  z-index: 100001;
+}
