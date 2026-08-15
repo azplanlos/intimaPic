@@ -440,6 +440,33 @@ export class VaultService {
     return platformAvailable && hasCredentials;
   }
 
+  // ─── Vault Rename ────────────────────────────────────────────────────
+
+  /**
+   * Rename the currently active vault.
+   * Updates the local registry immediately (with timestamp) and pushes
+   * the new name to remote settings.json if online and the vault is unlocked.
+   * If offline, the name is cached locally and will be synced on next unlock.
+   */
+  async renameActiveVault(newName: string): Promise<void> {
+    const vault = this.registry.activeVault();
+    if (!vault) return;
+
+    // 1. Update local registry (records nameUpdatedAt timestamp)
+    this.registry.renameVault(vault.id, newName);
+
+    // 2. Push to remote if online and adapter is connected
+    if (navigator.onLine && this.activeAdapter) {
+      try {
+        await this.vaultSettings.updateName(this.activeAdapter, newName);
+      } catch {
+        // Non-critical: will sync on next unlock via syncVaultSettings
+      }
+    }
+    // If offline: local nameUpdatedAt is newer than remote updatedAt,
+    // so syncVaultSettings will push the local name on next online unlock.
+  }
+
   // ─── Vault Settings Sync ────────────────────────────────────────────
 
   /**
