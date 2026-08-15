@@ -67,11 +67,13 @@ export class VaultRegistryService {
    * Register a new vault and make it the active vault.
    */
   addVault(name: string, storageSettings: StorageSettings): VaultInfo {
+    const now = new Date().toISOString();
     const vault: VaultInfo = {
       id: crypto.randomUUID(),
       name,
       storageSettings,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      nameUpdatedAt: now,
     };
 
     const updated = [...this._vaults(), vault];
@@ -102,11 +104,13 @@ export class VaultRegistryService {
   }
 
   /**
-   * Update vault display name.
+   * Update vault display name and record the timestamp of this change.
+   * The timestamp is used for cross-device sync to determine which name is newer.
    */
-  renameVault(id: string, newName: string): void {
+  renameVault(id: string, newName: string, nameUpdatedAt?: string): void {
+    const ts = nameUpdatedAt || new Date().toISOString();
     const updated = this._vaults().map(v =>
-      v.id === id ? { ...v, name: newName } : v
+      v.id === id ? { ...v, name: newName, nameUpdatedAt: ts } : v
     );
     this._vaults.set(updated);
     this.persist(updated);

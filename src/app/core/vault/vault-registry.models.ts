@@ -13,4 +13,6 @@ export interface VaultInfo {
   storageSettings: StorageSettings;
   /** When the vault was first registered on this device */
   createdAt: string;
+  /** ISO timestamp of the last local name change (used for cross-device sync) */
+  nameUpdatedAt?: string;
 }

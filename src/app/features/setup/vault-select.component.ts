@@ -5,6 +5,8 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatCardModule } from '@angular/material/card';
 import { MatMenuModule } from '@angular/material/menu';
 import { VaultRegistryService } from '../../core/vault/vault-registry.service';
+import { VaultService } from '../../core/vault/vault.service';
+import { VaultSettingsService } from '../../core/vault/vault-settings.service';
 import type { VaultInfo } from '../../core/vault/vault-registry.models';
 
 @Component({
@@ -169,6 +171,8 @@ import type { VaultInfo } from '../../core/vault/vault-registry.models';
 })
 export class VaultSelectComponent {
   protected readonly registry = inject(VaultRegistryService);
+  private readonly vaultService = inject(VaultService);
+  private readonly vaultSettings = inject(VaultSettingsService);
   private readonly router = inject(Router);
 
   selectVault(vault: VaultInfo): void {
@@ -196,7 +200,20 @@ export class VaultSelectComponent {
   renameVault(vault: VaultInfo): void {
     const newName = prompt('Neuer Tresorname:', vault.name);
     if (newName && newName.trim() && newName.trim() !== vault.name) {
-      this.registry.renameVault(vault.id, newName.trim());
+      const trimmedName = newName.trim();
+
+      // Update local registry (records nameUpdatedAt timestamp)
+      this.registry.renameVault(vault.id, trimmedName);
+
+      // If this vault is currently unlocked, push the new name to remote immediately
+      if (this.vaultService.isUnlocked() && this.registry.activeVaultId() === vault.id) {
+        try {
+          const adapter = this.vaultService.getStorage();
+          this.vaultSettings.updateName(adapter, trimmedName);
+        } catch {
+          // Storage not available — will sync on next unlock
+        }
+      }
     }
   }
 
