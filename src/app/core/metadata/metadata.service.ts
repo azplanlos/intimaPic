@@ -35,6 +35,13 @@ export class MetadataService {
     }
   };
 
+  /**
+   * Promise that resolves when background remote merge completes.
+   * Exposed for testing — production code should NOT await this during unlock.
+   * @internal
+   */
+  remoteMergeComplete: Promise<void> = Promise.resolve();
+
   // ─── Lifecycle ─────────────────────────────────────────────────
 
   /** Called when vault is opened. Loads local metadata immediately, then merges remote in background. */
@@ -54,7 +61,7 @@ export class MetadataService {
     document.addEventListener('visibilitychange', this.onVisibilityChange);
 
     // Merge remote records in the background (non-blocking)
-    this.mergeRemoteInBackground(localRecords);
+    this.remoteMergeComplete = this.mergeRemoteInBackground(localRecords);
   }
 
   /**
