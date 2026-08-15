@@ -57,6 +57,17 @@ export class BlobLruCache {
   }
 
   /**
+   * Delete a single entry by key. Revokes the blob URL if it exists.
+   */
+  delete(key: string): void {
+    const url = this.map.get(key);
+    if (url !== undefined) {
+      URL.revokeObjectURL(url);
+      this.map.delete(key);
+    }
+  }
+
+  /**
    * Evict entries matching a prefix (e.g. "full:" to clear all full-res).
    */
   evictByPrefix(prefix: string): void {

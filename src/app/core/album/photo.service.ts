@@ -245,6 +245,95 @@ export class PhotoService {
   }
 
   /**
+   * Delete a photo from an album.
+   * Removes the encrypted original, its thumbnails (grid + preview), and clears caches.
+   */
+  async deletePhoto(photo: PhotoItem, directoryId: string): Promise<void> {
+    // 1. Delete the encrypted original file
+    await this.swClient.deleteFile(photo.storagePath);
+
+    // 2. Delete thumbnails (best-effort, they may not exist)
+    const baseName = photo.encryptedName.slice(0, -4); // Remove .c9r suffix
+    const thumbDirId = directoryId || '_root';
+    const gridThumbPath = `_intimapic/thumbs/${thumbDirId}/${baseName}.grid`;
+    const previewThumbPath = `_intimapic/thumbs/${thumbDirId}/${baseName}.preview`;
+
+    try { await this.swClient.deleteFile(gridThumbPath); } catch { /* thumbnail may not exist */ }
+    try { await this.swClient.deleteFile(previewThumbPath); } catch { /* thumbnail may not exist */ }
+
+    // 3. Clear cached blob URLs for this photo
+    this.thumbnailCache.delete(`grid:${photo.encryptedName}`);
+    this.thumbnailCache.delete(`preview:${photo.encryptedName}`);
+    this.fullResCache.delete(`full:${photo.encryptedName}`);
+
+    // 4. Invalidate directory cache so next listing is fresh
+    await this.swClient.invalidateCache('directory', directoryId).catch(() => {});
+  }
+
+  /**
+   * Move a photo from one album to another.
+   * Reads the encrypted file, re-encrypts the filename for the target directory,
+   * writes the file to the new location, copies thumbnails, and deletes the originals.
+   *
+   * @returns The new PhotoItem in the target album.
+   */
+  async movePhoto(photo: PhotoItem, sourceDirectoryId: string, targetDirectoryId: string): Promise<PhotoItem> {
+    // 1. Read the encrypted original file data
+    let encryptedData: ArrayBuffer;
+    try {
+      encryptedData = await this.swClient.getFile(photo.storagePath);
+    } catch (err) {
+      if (err instanceof SwError) {
+        const storage = this.vaultService.getStorage();
+        encryptedData = await storage.readFile(photo.storagePath);
+      } else {
+        throw err;
+      }
+    }
+
+    // 2. Encrypt the filename for the target directory
+    const newEncryptedName = await this.crypto.encryptFilename(photo.name, targetDirectoryId);
+
+    // 3. Compute the target storage path
+    const targetDirPath = await this.crypto.encryptDirectoryId(targetDirectoryId);
+    const newStoragePath = `${targetDirPath}/${newEncryptedName}`;
+
+    // 4. Write the file to the target directory
+    await this.swClient.writeFile(newStoragePath, encryptedData);
+
+    // 5. Copy thumbnails to target (best-effort)
+    const sourceBaseName = photo.encryptedName.slice(0, -4);
+    const targetBaseName = newEncryptedName.slice(0, -4);
+    const sourceThumbDir = sourceDirectoryId || '_root';
+    const targetThumbDir = targetDirectoryId || '_root';
+
+    for (const size of ['grid', 'preview'] as const) {
+      try {
+        const thumbData = await this.swClient.getFile(`_intimapic/thumbs/${sourceThumbDir}/${sourceBaseName}.${size}`);
+        await this.swClient.writeFile(`_intimapic/thumbs/${targetThumbDir}/${targetBaseName}.${size}`, thumbData);
+      } catch { /* thumbnail may not exist */ }
+    }
+
+    // 6. Delete the original file and thumbnails from source
+    await this.deletePhoto(photo, sourceDirectoryId);
+
+    // 7. Invalidate target directory cache
+    await this.swClient.invalidateCache('directory', targetDirectoryId).catch(() => {});
+
+    // 8. Return the new PhotoItem
+    return {
+      encryptedName: newEncryptedName,
+      name: photo.name,
+      storagePath: newStoragePath,
+      thumbnailUrl: null,
+      previewUrl: null,
+      fullResUrl: null,
+      loading: false,
+      size: photo.size,
+    };
+  }
+
+  /**
    * Legacy compatibility: decrypt a photo (returns full-res blob URL).
    */
   async decryptPhoto(photo: PhotoItem): Promise<string> {
