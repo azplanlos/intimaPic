@@ -146,7 +146,8 @@ export class VaultService {
 
   /**
    * Connect to an existing vault on a new device.
-   * Validates that masterkey.cryptomator exists, registers it,
+   * Validates that masterkey.cryptomator exists, reads the vault name from
+   * the remote settings.json (if available), registers the vault,
    * and sets status to 'locked' so the unlock screen appears.
    */
   async connectExistingVault(settings: StorageSettings, vaultName?: string): Promise<boolean> {
@@ -169,12 +170,27 @@ export class VaultService {
         return false;
       }
 
-      // 3. Disconnect (will reconnect on unlock)
+      // 3. Read the vault name from remote settings.json (shared across devices)
+      let name = vaultName || 'Mein Tresor';
+      let nameUpdatedAt: string | undefined;
+      try {
+        const remoteSettings = await this.vaultSettings.readSettings(adapter);
+        if (remoteSettings?.name) {
+          name = remoteSettings.name;
+          nameUpdatedAt = remoteSettings.updatedAt;
+        }
+      } catch {
+        // Non-critical — use fallback name if settings.json can't be read
+      }
+
+      // 4. Disconnect (will reconnect on unlock)
       await adapter.disconnect();
 
-      // 4. Register vault in the registry
-      const name = vaultName || 'Mein Tresor';
-      this.registry.addVault(name, settings);
+      // 5. Register vault in the registry with the remote name + timestamp
+      const vault = this.registry.addVault(name, settings);
+      if (nameUpdatedAt) {
+        this.registry.renameVault(vault.id, name, nameUpdatedAt);
+      }
 
       this._status.set('locked');
       return true;
@@ -427,22 +443,41 @@ export class VaultService {
   // ─── Vault Settings Sync ────────────────────────────────────────────
 
   /**
-   * Ensure settings.json exists in the vault and sync the vault name.
-   * The local registry name is authoritative — if it differs from remote,
-   * the remote settings are updated. If no settings.json exists, it is created.
+   * Ensure settings.json exists in the vault and sync the vault name
+   * bidirectionally using timestamps to determine the authoritative source.
+   *
+   * - If no remote settings.json exists → push the local name.
+   * - If names differ → compare local `nameUpdatedAt` vs remote `updatedAt`.
+   *   The newer timestamp wins. On tie or missing local timestamp, remote wins
+   *   (favors the shared state over a potentially stale local default).
    */
   private async syncVaultSettings(vaultId: string, localName: string): Promise<void> {
     if (!this.activeAdapter) return;
 
     try {
-      const settings = await this.vaultSettings.readSettings(this.activeAdapter);
+      const vault = this.registry.getVault(vaultId);
+      const localNameUpdatedAt = vault?.nameUpdatedAt ?? null;
 
-      if (!settings) {
+      const remoteSettings = await this.vaultSettings.readSettings(this.activeAdapter);
+
+      if (!remoteSettings) {
         // No settings file yet — create it with the local name
         await this.vaultSettings.ensureSettings(this.activeAdapter, localName);
-      } else if (settings.name !== localName) {
-        // Local name was changed (e.g. renamed on vault-select screen) — push to remote
-        await this.vaultSettings.updateName(this.activeAdapter, localName);
+      } else if (remoteSettings.name !== localName) {
+        // Names differ — use timestamps to decide which is newer
+        const remoteUpdatedAt = remoteSettings.updatedAt;
+
+        const localIsNewer = localNameUpdatedAt
+          && remoteUpdatedAt
+          && new Date(localNameUpdatedAt).getTime() > new Date(remoteUpdatedAt).getTime();
+
+        if (localIsNewer) {
+          // Local was explicitly renamed after remote — push to remote
+          await this.vaultSettings.updateName(this.activeAdapter, localName);
+        } else {
+          // Remote is newer (or no local timestamp) — pull remote name to local
+          this.registry.renameVault(vaultId, remoteSettings.name, remoteUpdatedAt);
+        }
       }
     } catch {
       // Non-critical — don't block unlock if settings sync fails
