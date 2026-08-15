@@ -206,6 +206,13 @@ export class MetadataService {
     return newValue;
   }
 
+  /** Delete metadata for a photo (e.g. when photo is deleted from album). */
+  async deleteMetadata(photoId: string): Promise<void> {
+    this.cache.delete(photoId);
+    await this.store.delete(photoId);
+    this.resetFlushTimer();
+  }
+
   /** Set rating (1–5) or clear (null if same star tapped). */
   async setRating(photoId: string, value: number): Promise<number | null> {
     const existing = this.cache.get(photoId);

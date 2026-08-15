@@ -6,12 +6,15 @@ import { Router, ActivatedRoute } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatDialog } from '@angular/material/dialog';
+import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { PhotoService, type PhotoItem } from '../../core/album/photo.service';
 import { ToolbarService } from '../../shared/toolbar.service';
 import { MetadataService } from '../../core/metadata/metadata.service';
 import { SortControlComponent } from '../../shared/sort-control/sort-control.component';
 import { getSortPreference, setSortPreference, sortByFilename, sortByCaptureDate, sortByRating } from '../../core/metadata/sort-utils';
 import type { MetadataRecord, SortCriterion } from '../../core/metadata/metadata.models';
+import { AlbumPickerDialogComponent, type AlbumPickerDialogData, type AlbumPickerDialogResult } from './album-picker-dialog.component';
 import PhotoSwipe from 'photoswipe';
 
 @Component({
@@ -21,6 +24,7 @@ import PhotoSwipe from 'photoswipe';
     MatButtonModule,
     MatIconModule,
     MatProgressSpinnerModule,
+    MatSnackBarModule,
     SortControlComponent,
   ],
   template: `
@@ -170,6 +174,8 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
   private readonly photoService = inject(PhotoService);
   private readonly toolbar = inject(ToolbarService);
   private readonly metadataService = inject(MetadataService);
+  private readonly dialog = inject(MatDialog);
+  private readonly snackBar = inject(MatSnackBar);
 
   @ViewChildren('photoCell') photoCells!: QueryList<ElementRef>;
 
@@ -459,6 +465,34 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
           this.toggleInfoOverlay(photos);
         },
       });
+
+      // Register delete button in the top bar
+      (this.lightbox as any).ui.registerElement({
+        name: 'delete-button',
+        order: 9,
+        isButton: true,
+        html: '<svg aria-hidden="true" class="pswp__icn" viewBox="0 0 24 24" width="24" height="24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" fill="currentColor"/></svg>',
+        onClick: (_event: Event, _el: HTMLElement, pswp: PhotoSwipe) => {
+          const currentPhoto = photos[pswp.currIndex];
+          if (currentPhoto) {
+            this.confirmAndDeletePhoto(currentPhoto, pswp);
+          }
+        },
+      });
+
+      // Register move button in the top bar
+      (this.lightbox as any).ui.registerElement({
+        name: 'move-button',
+        order: 10,
+        isButton: true,
+        html: '<svg aria-hidden="true" class="pswp__icn" viewBox="0 0 24 24" width="24" height="24"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-6 12l-4-4h3V10h2v4h3l-4 4z" fill="currentColor"/></svg>',
+        onClick: (_event: Event, _el: HTMLElement, pswp: PhotoSwipe) => {
+          const currentPhoto = photos[pswp.currIndex];
+          if (currentPhoto) {
+            this.openMoveDialog(currentPhoto, pswp);
+          }
+        },
+      });
     });
 
     this.lightbox.init();
@@ -686,6 +720,87 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
   goUpload(): void {
     this.router.navigate(['/upload'], {
       queryParams: { albumId: this.albumId(), albumName: this.albumName() }
+    });
+  }
+
+  // ─── Delete & Move ──────────────────────────────────────────────
+
+  /**
+   * Show a confirmation prompt and delete the current photo.
+   * Closes lightbox if this was the last photo, otherwise navigates to the next one.
+   */
+  private async confirmAndDeletePhoto(photo: PhotoItem, pswp: PhotoSwipe): Promise<void> {
+    const confirmed = window.confirm(`„${photo.name}" unwiderruflich löschen?`);
+    if (!confirmed) return;
+
+    try {
+      // Delete from storage
+      await this.photoService.deletePhoto(photo, this.albumId());
+
+      // Remove metadata
+      await this.metadataService.deleteMetadata(photo.encryptedName);
+
+      // Remove from local list
+      this.photos.update(photos => photos.filter(p => p.encryptedName !== photo.encryptedName));
+      this.refreshMetadata();
+
+      this.snackBar.open('Foto gelöscht', undefined, { duration: 2500 });
+
+      // Handle lightbox navigation after deletion
+      const remaining = this.sortedPhotos();
+      if (remaining.length === 0) {
+        pswp.close();
+      } else {
+        // Rebuild dataSource and refresh
+        const newIndex = Math.min(pswp.currIndex, remaining.length - 1);
+        pswp.close();
+        // Re-open lightbox on next photo after a small delay for DOM update
+        setTimeout(() => this.openLightbox(newIndex), 150);
+      }
+    } catch (err) {
+      console.error('Failed to delete photo:', err);
+      this.snackBar.open('Fehler beim Löschen', undefined, { duration: 3000 });
+    }
+  }
+
+  /**
+   * Open the album picker dialog and move the current photo to the selected album.
+   */
+  private openMoveDialog(photo: PhotoItem, pswp: PhotoSwipe): void {
+    const dialogRef = this.dialog.open(AlbumPickerDialogComponent, {
+      data: {
+        excludeDirectoryId: this.albumId(),
+        title: 'Foto verschieben nach…',
+      } satisfies AlbumPickerDialogData,
+      width: '340px',
+    });
+
+    dialogRef.afterClosed().subscribe(async (result: AlbumPickerDialogResult | undefined) => {
+      if (!result) return;
+
+      try {
+        // Move the photo to the target album
+        await this.photoService.movePhoto(photo, this.albumId(), result.album.directoryId);
+
+        // Remove metadata from current album context (it stays in the store but the photo is gone from this view)
+        this.photos.update(photos => photos.filter(p => p.encryptedName !== photo.encryptedName));
+        this.refreshMetadata();
+
+        this.snackBar.open(`Verschoben nach „${result.album.name}"`, undefined, { duration: 3000 });
+
+        // Handle lightbox after move
+        const remaining = this.sortedPhotos();
+        if (remaining.length === 0) {
+          pswp.close();
+        } else {
+          const newIndex = Math.min(pswp.currIndex, remaining.length - 1);
+          pswp.close();
+          setTimeout(() => this.openLightbox(newIndex), 150);
+        }
+      } catch (err) {
+        console.error('Failed to move photo:', err);
+        this.snackBar.open('Fehler beim Verschieben', undefined, { duration: 3000 });
+      }
     });
   }
 
