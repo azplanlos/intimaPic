@@ -331,6 +331,10 @@ export class UnlockVaultComponent implements OnInit {
   private runDeferredImportScan(): void {
     queueMicrotask(async () => {
       try {
+        // Wait for storage adapter to be connected (may be connecting in background
+        // if the cache-based unlock path was used on slow network)
+        await this.vaultService.storageReady;
+
         const hasUnsorted = await this.importScanService.scanRoot();
 
         if (hasUnsorted) {

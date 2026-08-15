@@ -389,6 +389,10 @@ export class ImportWizardComponent implements OnInit, OnDestroy {
     });
 
     try {
+      // Ensure storage adapter is connected (may still be connecting in background
+      // if the cache-based unlock path was used on slow network)
+      await this.vaultService.storageReady;
+
       // Load albums for selection
       await this.albumService.loadAlbums();
 
