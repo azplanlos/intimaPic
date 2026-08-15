@@ -53,6 +53,10 @@ import { ToolbarService } from './toolbar.service';
             <span>Tresor wechseln</span>
           </button>
         }
+        <button mat-menu-item (click)="renameVault()">
+          <mat-icon>edit</mat-icon>
+          <span>Tresor umbenennen</span>
+        </button>
         <button mat-menu-item (click)="addVault()">
           <mat-icon>add</mat-icon>
           <span>Neuen Tresor hinzufügen</span>
@@ -135,6 +139,16 @@ export class AppShellComponent {
   addVault(): void {
     sessionStorage.setItem('intimapic_adding_new_vault', 'true');
     this.router.navigate(['/setup/welcome']);
+  }
+
+  async renameVault(): Promise<void> {
+    const vault = this.registry.activeVault();
+    if (!vault) return;
+
+    const newName = prompt('Neuer Tresorname:', vault.name);
+    if (newName && newName.trim() && newName.trim() !== vault.name) {
+      await this.vaultService.renameActiveVault(newName.trim());
+    }
   }
 
   openBiometricSettings(): void {
