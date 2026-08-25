@@ -37,6 +37,10 @@ export class AlbumService {
   /**
    * Load all albums from the root directory.
    * Uses the ServiceWorker for cached/network access + filename decryption.
+   *
+   * If the SW cannot fulfill the request (e.g. token not yet transferred during
+   * background storage connection), waits for storageReady and retries before
+   * falling back to direct storage access.
    */
   async loadAlbums(forceRefresh = false): Promise<Album[]> {
     try {
@@ -56,7 +60,26 @@ export class AlbumService {
       // Fall back to direct storage access when SW is unavailable or
       // cannot fulfill the request (not ready, no keys, no token, etc.)
       if (err instanceof SwError) {
-        return this.loadAlbumsDirect();
+        // The SW may have failed because the storage adapter is still connecting
+        // in the background (cache-based unlock path). Wait for it to be ready,
+        // then retry the SW path (token is transferred once storage connects).
+        try {
+          await this.vaultService.storageReady;
+
+          // Retry via SW – after storageReady the token should be transferred
+          const { albums: retryAlbums } = await this.swClient.listAlbums(forceRefresh);
+          const albums: Album[] = retryAlbums.map(a => ({
+            name: a.name,
+            directoryId: a.directoryId,
+            storagePath: a.storagePath,
+            encryptedName: a.encryptedName,
+          }));
+          this._albums.set(albums);
+          return albums;
+        } catch {
+          // SW still can't fulfill – fall back to direct storage access
+          return this.loadAlbumsDirect();
+        }
       }
       throw err;
     }
@@ -65,8 +88,10 @@ export class AlbumService {
   /**
    * Fallback: Load albums directly via storage adapter (used during initial setup
    * or when SW is not yet registered).
+   * Awaits storageReady to ensure the adapter is connected (handles cache-based unlock).
    */
   private async loadAlbumsDirect(): Promise<Album[]> {
+    await this.vaultService.storageReady;
     const storage = this.vaultService.getStorage();
     const rootPath = await this.crypto.encryptDirectoryId(this.ROOT_DIR_ID);
     const entries = await storage.listFiles(rootPath);
