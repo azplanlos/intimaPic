@@ -430,12 +430,18 @@ export class VaultService {
    * Connect storage adapter in the background (fire-and-forget).
    * Used when cache was used for unlock but we still want a connection for later ops.
    * Sets this.storageReady so callers can await the connection.
+   * Also transfers the auth token to the SW so it can handle requests.
    */
   private connectStorageInBackground(settings: StorageSettings): void {
-    this.storageReady = this.storageFactory.connectAdapter(settings).then(adapter => {
+    this.storageReady = this.storageFactory.connectAdapter(settings).then(async adapter => {
       this.activeAdapter = adapter;
-      // Transfer token to SW once connected
-      this.transferAuthTokenToSw(settings).catch(() => {});
+      // Transfer token to SW once connected – await it so that consumers
+      // of storageReady can rely on the SW being fully operational.
+      try {
+        await this.transferAuthTokenToSw(settings);
+      } catch {
+        // Non-critical: SW will request token via NEED_TOKEN on next request
+      }
     }).catch(() => {
       // Will retry on next operation that needs storage
     });
