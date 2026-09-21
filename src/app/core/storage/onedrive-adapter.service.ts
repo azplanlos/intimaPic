@@ -514,6 +514,35 @@ export class OneDriveAdapter implements StorageAdapter {
     }
   }
 
+  /**
+   * Validate the current token and refresh it if expired.
+   * Returns true if a valid token is available, false if auth failed.
+   */
+  async validateAndRefreshToken(): Promise<boolean> {
+    if (!this.accessToken) {
+      // No token at all - try to authenticate
+      try {
+        this.accessToken = await this.authenticate();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    // Check if current token is valid
+    if (await this.validateToken()) {
+      return true;
+    }
+
+    // Token is invalid/expired - try to refresh
+    try {
+      this.accessToken = await this.authenticate();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Singleton MSAL instance – reused across calls to avoid interaction_in_progress errors. */
   private msalInstance: import('@azure/msal-browser').IPublicClientApplication | null = null;
   private msalInitPromise: Promise<import('@azure/msal-browser').IPublicClientApplication> | null = null;

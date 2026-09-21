@@ -494,6 +494,7 @@ export class VaultService {
    * Transfer the current auth token to the ServiceWorker.
    * Reads the token directly from the active storage adapter instance
    * (tokens are acquired via MSAL/Cognito and not stored in settings).
+   * For OneDrive, validates and refreshes the token if necessary before transfer.
    */
   private async transferAuthTokenToSw(settings: StorageSettings): Promise<void> {
     try {
@@ -506,6 +507,13 @@ export class VaultService {
       if (provider === 'onedrive') {
         const { OneDriveAdapter } = await import('../storage/onedrive-adapter.service');
         const adapter = this.injector.get(OneDriveAdapter);
+        
+        // Validate and refresh token if needed before transferring
+        const isValid = await adapter.validateAndRefreshToken();
+        if (!isValid) {
+          throw new Error('Failed to validate/refresh OneDrive token');
+        }
+        
         token = adapter.getAccessToken();
       } else if (provider === 's3') {
         const { S3Adapter } = await import('../storage/s3-adapter.service');
@@ -574,7 +582,31 @@ export class VaultService {
         return false;
       }
 
-      // 3. Transfer keys to SW
+      // 3. For OneDrive: validate and refresh token if needed while user gesture is active
+      if (storageConnected && settings.provider === 'onedrive') {
+        try {
+          const { OneDriveAdapter } = await import('../storage/onedrive-adapter.service');
+          const adapter = this.injector.get(OneDriveAdapter);
+          const tokenValid = await adapter.validateAndRefreshToken();
+          if (!tokenValid) {
+            this._error.set('OneDrive-Token konnte nicht aktualisiert werden. Bitte versuche es erneut.');
+            if (this.activeAdapter) {
+              await this.activeAdapter.disconnect();
+              this.activeAdapter = null;
+            }
+            return false;
+          }
+        } catch (err) {
+          this._error.set('Fehler bei der OneDrive-Authentifizierung. Bitte versuche es erneut.');
+          if (this.activeAdapter) {
+            await this.activeAdapter.disconnect();
+            this.activeAdapter = null;
+          }
+          return false;
+        }
+      }
+
+      // 4. Transfer keys to SW
       const keys = this.cryptoService.getMasterKeys();
       if (keys) {
         try {
@@ -608,16 +640,16 @@ export class VaultService {
         });
       }
 
-      // Transfer auth token to SW (if connected)
+      // 5. Transfer auth token to SW (if connected)
       if (storageConnected && this.activeAdapter) {
         try {
           await this.transferAuthTokenToSw(settings);
         } catch {
-          // Non-critical
+          // Non-critical - token validation already happened above
         }
       }
 
-      // ─── Mark as unlocked IMMEDIATELY ────────────────────────────────
+      // ─── Mark as unlocked ONLY after all validations pass ─────────────
       this._status.set('unlocked');
 
       // ─── Non-blocking background tasks ───────────────────────────────
