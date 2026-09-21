@@ -26,6 +26,19 @@ let keysSetByClientId: string | null = null;
 let storageAdapter: SwStorageAdapter | null = null;
 const authTokens = new Map<string, { token: string; refreshToken?: string; expiresAt: number }>();
 
+/** Cache keys of directories currently being revalidated (prevents duplicate listings). */
+const revalidationsInFlight = new Set<string>();
+
+/**
+ * Revalidations postponed because no storage adapter was connected yet.
+ * Happens when the SW was restarted: the first listing is answered from cache
+ * before the page has re-sent its auth token. Maps cacheKey → directoryId.
+ */
+const deferredRevalidations = new Map<string, string>();
+
+/** A directory listing younger than this is considered fresh enough to skip revalidation. */
+const MIN_REVALIDATE_INTERVAL = 10_000;
+
 // Singleton instances
 const cacheManager = new CacheManager();
 const filenameCrypto = new FilenameCrypto();
@@ -218,6 +231,9 @@ function handleLock(port: MessagePort): void {
     storageAdapter = null;
   }
 
+  // Drop postponed syncs – they belong to the locked vault
+  deferredRevalidations.clear();
+
   // Note: Encrypted cache is NOT cleared (it's useless without keys)
 
   reply(port, { type: 'ACK' });
@@ -241,6 +257,24 @@ function handleSetAuthToken(
   );
 
   reply(port, { type: 'ACK' });
+
+  // Run revalidations that were postponed while no storage connection existed.
+  flushDeferredRevalidations();
+}
+
+/**
+ * Start any revalidation that was postponed because the storage adapter
+ * wasn't connected yet.
+ */
+function flushDeferredRevalidations(): void {
+  if (deferredRevalidations.size === 0) return;
+
+  const pending = [...deferredRevalidations.entries()];
+  deferredRevalidations.clear();
+
+  for (const [cacheKey, directoryId] of pending) {
+    revalidateDirectory(directoryId, cacheKey).catch(() => {});
+  }
 }
 
 async function handleListAlbums(
@@ -303,7 +337,6 @@ async function handleListPhotos(
 ): Promise<void> {
   if (!ensureKeys(port)) return;
 
-  const TTL = 5 * 60 * 1000;
   const cacheKey = `${currentVaultId}:${command.directoryId}`;
 
   // Check cache first (Stale-While-Revalidate)
@@ -313,8 +346,11 @@ async function handleListPhotos(
     const photos = await decryptPhotoList(cached.entries, command.directoryId);
     reply(port, { type: 'PHOTOS_LIST', directoryId: command.directoryId, photos, fromCache: true });
 
-    // If stale, revalidate in background (don't await)
-    if (Date.now() - cached.syncedAt > TTL) {
+    // Always revalidate in the background (don't await) so the client can
+    // update its view as soon as the sync finishes. Listings that were just
+    // synced are skipped – this avoids a redundant round trip when the client
+    // re-lists immediately after a DIRECTORY_UPDATED push.
+    if (Date.now() - cached.syncedAt > MIN_REVALIDATE_INTERVAL) {
       revalidateDirectory(command.directoryId, cacheKey).catch(() => {});
     }
     return;
@@ -665,33 +701,62 @@ async function decryptPhotoList(
  * Background revalidation: fetch fresh directory listing and notify clients if changed.
  */
 async function revalidateDirectory(directoryId: string, cacheKey: string): Promise<void> {
-  if (!storageAdapter || !masterKeys) return;
+  if (!masterKeys) return;
+  if (!self.navigator?.onLine) return;
 
-  const dirPath = await directoryIdCrypto.encryptDirectoryId(directoryId);
-  const entries = await storageAdapter.listFiles(dirPath);
+  if (!storageAdapter) {
+    // The SW has no storage connection yet – retry as soon as the token arrives,
+    // otherwise the client would keep showing cached data until it re-lists.
+    deferredRevalidations.set(cacheKey, directoryId);
+    return;
+  }
 
-  const existing = await cacheManager.getDirectoryListing(cacheKey);
-  const existingNames = new Set(existing?.entries.map(e => e.encryptedName) ?? []);
-  const newNames = new Set(entries.map(e => e.encryptedName));
+  if (revalidationsInFlight.has(cacheKey)) return;
 
-  const added = entries.filter(e => !existingNames.has(e.encryptedName)).length;
-  const removed = (existing?.entries ?? []).filter(e => !newNames.has(e.encryptedName)).length;
+  revalidationsInFlight.add(cacheKey);
 
-  await cacheManager.putDirectoryListing({
-    key: cacheKey,
-    vaultId: currentVaultId!,
-    directoryId,
-    entries,
-    syncedAt: Date.now(),
-  });
+  try {
+    const dirPath = await directoryIdCrypto.encryptDirectoryId(directoryId);
+    const entries = await storageAdapter.listFiles(dirPath);
 
-  if (added > 0 || removed > 0) {
-    await broadcastToClients({
-      type: 'DIRECTORY_UPDATED',
-      directoryId,
-      addedCount: added,
-      removedCount: removed,
+    const existing = await cacheManager.getDirectoryListing(cacheKey);
+    const existingByName = new Map((existing?.entries ?? []).map(e => [e.encryptedName, e]));
+    const newNames = new Set(entries.map(e => e.encryptedName));
+
+    const added = entries.filter(e => !existingByName.has(e.encryptedName)).length;
+    const removed = (existing?.entries ?? []).filter(e => !newNames.has(e.encryptedName)).length;
+
+    // Same encrypted name but a different size means the file was replaced.
+    // Drop its cached thumbnails so the client doesn't keep showing the old image.
+    const changed = entries.filter(e => {
+      const previous = existingByName.get(e.encryptedName);
+      return previous !== undefined && previous.size !== e.size;
     });
+
+    for (const entry of changed) {
+      await cacheManager.deleteThumbnail(`grid:${entry.encryptedName}`);
+      await cacheManager.deleteThumbnail(`preview:${entry.encryptedName}`);
+    }
+
+    await cacheManager.putDirectoryListing({
+      key: cacheKey,
+      vaultId: currentVaultId!,
+      directoryId,
+      entries,
+      syncedAt: Date.now(),
+    });
+
+    if (added > 0 || removed > 0 || changed.length > 0) {
+      await broadcastToClients({
+        type: 'DIRECTORY_UPDATED',
+        directoryId,
+        addedCount: added,
+        removedCount: removed,
+        changedCount: changed.length,
+      });
+    }
+  } finally {
+    revalidationsInFlight.delete(cacheKey);
   }
 }
 

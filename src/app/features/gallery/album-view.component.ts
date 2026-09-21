@@ -1,5 +1,5 @@
 import {
-  Component, inject, signal, computed, OnInit, OnDestroy,
+  Component, inject, signal, computed, OnInit, OnDestroy, ChangeDetectorRef,
   ElementRef, AfterViewInit, ViewChildren, QueryList
 } from '@angular/core';
 import { Router, ActivatedRoute } from '@angular/router';
@@ -9,6 +9,7 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatDialog } from '@angular/material/dialog';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { PhotoService, type PhotoItem } from '../../core/album/photo.service';
+import { SwClientService, type DirectoryUpdate } from '../../core/sw-client/sw-client.service';
 import { ToolbarService } from '../../shared/toolbar.service';
 import { MetadataService } from '../../core/metadata/metadata.service';
 import { SortControlComponent } from '../../shared/sort-control/sort-control.component';
@@ -16,6 +17,19 @@ import { getSortPreference, setSortPreference, sortByFilename, sortByCaptureDate
 import type { MetadataRecord, SortCriterion } from '../../core/metadata/metadata.models';
 import { AlbumPickerDialogComponent, type AlbumPickerDialogData, type AlbumPickerDialogResult } from './album-picker-dialog.component';
 import PhotoSwipe from 'photoswipe';
+
+/**
+ * Captured scroll state, used to keep the view visually stable while the
+ * photo list is replaced after a background sync.
+ */
+interface ScrollAnchor {
+  /** Photo that was at the top edge of the viewport, if any. */
+  encryptedName: string | null;
+  /** Offset of that photo relative to the top of the scroll container. */
+  offset: number;
+  /** Raw scrollTop, used as a fallback when the anchor photo is gone. */
+  scrollTop: number;
+}
 
 @Component({
   selector: 'app-album-view',
@@ -176,6 +190,9 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
   private readonly metadataService = inject(MetadataService);
   private readonly dialog = inject(MatDialog);
   private readonly snackBar = inject(MatSnackBar);
+  private readonly swClient = inject(SwClientService);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly cdr = inject(ChangeDetectorRef);
 
   @ViewChildren('photoCell') photoCells!: QueryList<ElementRef>;
 
@@ -197,6 +214,15 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
   });
 
   private observer: IntersectionObserver | null = null;
+  /** Unsubscribe handle for the SW directory-update listener. */
+  private unsubscribeDirectoryUpdate: (() => void) | null = null;
+  /**
+   * Sync result that arrived while the lightbox was open. The grid is only
+   * rebuilt after the lightbox closes, so the viewer is never disrupted.
+   */
+  private pendingSyncUpdate: DirectoryUpdate | null = null;
+  /** Cached scrolling ancestor (the app shell content area). */
+  private scrollContainer: HTMLElement | null = null;
   private lightbox: PhotoSwipe | null = null;
   /** Set to true when the lightbox is closing to prevent late refreshSlideContent calls. */
   private lightboxClosing = false;
@@ -235,10 +261,26 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
     this.photoCells.changes.subscribe(() => {
       this.observeNewCells();
     });
+
+    // The first listing is served from the SW cache, which revalidates against
+    // cloud storage in the background. Adopt the result as soon as it arrives
+    // so the user doesn't have to reopen the album to see current content.
+    this.unsubscribeDirectoryUpdate = this.swClient.onDirectoryUpdate((update) => {
+      if (update.directoryId !== this.albumId()) return;
+
+      if (this.lightbox) {
+        this.pendingSyncUpdate = update;
+        return;
+      }
+
+      void this.applySyncUpdate(update);
+    });
   }
 
   ngOnDestroy(): void {
     this.toolbar.reset();
+    this.unsubscribeDirectoryUpdate?.();
+    this.unsubscribeDirectoryUpdate = null;
     this.observer?.disconnect();
     this.lightboxClosing = true;
     this.abortAllSlides();
@@ -262,18 +304,162 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
       const meta = this.metadataService.getMetadataBatch(photoIds);
       this.metadata.set(meta);
 
-      // Queue background EXIF extraction for photos without metadata
-      const photosWithoutMetadata = items
-        .filter(p => !meta.has(p.encryptedName))
-        .map(p => ({ encryptedName: p.encryptedName, storagePath: p.storagePath }));
-      if (photosWithoutMetadata.length > 0) {
-        this.metadataService.queueBackgroundExtraction(photosWithoutMetadata);
-      }
+      this.queueMetadataExtraction(items, meta);
     } catch (err) {
       console.error('Failed to list photos:', err);
     } finally {
       this.loading.set(false);
     }
+  }
+
+  /** Queue background EXIF extraction for photos that have no metadata yet. */
+  private queueMetadataExtraction(items: PhotoItem[], meta: Map<string, MetadataRecord>): void {
+    const photosWithoutMetadata = items
+      .filter(p => !meta.has(p.encryptedName))
+      .map(p => ({ encryptedName: p.encryptedName, storagePath: p.storagePath }));
+    if (photosWithoutMetadata.length > 0) {
+      this.metadataService.queueBackgroundExtraction(photosWithoutMetadata);
+    }
+  }
+
+  // ─── Background Sync Adoption ───────────────────────────────────────
+
+  /**
+   * Adopt a finished background sync into the currently displayed grid.
+   *
+   * The list is merged instead of reloaded: already decrypted thumbnails are
+   * kept, the loading spinner never reappears (that would tear down the grid),
+   * and the scroll position is corrected so the photo the user was looking at
+   * stays put – even when photos were inserted above it.
+   */
+  private async applySyncUpdate(update: DirectoryUpdate): Promise<void> {
+    // The initial load is still running – it will pick up the fresh listing itself.
+    if (this.loading()) return;
+
+    let incoming: PhotoItem[];
+    try {
+      incoming = await this.photoService.listPhotos(this.albumId());
+    } catch (err) {
+      console.error('Failed to refresh photos after sync:', err);
+      return;
+    }
+
+    // Guard against a late response after navigating away or opening the viewer.
+    if (!this.unsubscribeDirectoryUpdate || this.lightbox) {
+      this.pendingSyncUpdate = this.lightbox ? update : null;
+      return;
+    }
+
+    const existingByName = new Map(this.photos().map(p => [p.encryptedName, p]));
+
+    // A different size means the file itself was replaced – throw away the
+    // decrypted blobs so the new content gets fetched.
+    if (update.changedCount > 0) {
+      for (const photo of incoming) {
+        const existing = existingByName.get(photo.encryptedName);
+        if (existing && existing.size !== photo.size) {
+          this.photoService.invalidatePhoto(photo.encryptedName);
+          existingByName.delete(photo.encryptedName);
+        }
+      }
+    }
+
+    // Reuse existing item objects so blob URLs and loading state survive.
+    const merged = incoming.map(photo => {
+      const existing = existingByName.get(photo.encryptedName);
+      if (!existing) return photo;
+      if (existing.size === photo.size && existing.storagePath === photo.storagePath) return existing;
+      return { ...existing, size: photo.size, storagePath: photo.storagePath };
+    });
+
+    if (!this.hasPhotoListChanged(merged)) return;
+
+    const anchor = this.captureScrollAnchor();
+
+    this.photos.set(merged);
+    this.refreshMetadata();
+
+    // Flush the template so the new cells exist before correcting the scroll offset.
+    this.cdr.detectChanges();
+    this.restoreScrollAnchor(anchor);
+    this.observeNewCells();
+
+    this.queueMetadataExtraction(merged, this.metadata());
+  }
+
+  /** Whether the merged list actually differs from what is currently rendered. */
+  private hasPhotoListChanged(merged: PhotoItem[]): boolean {
+    const current = this.photos();
+    if (current.length !== merged.length) return true;
+    return merged.some((photo, i) => current[i] !== photo);
+  }
+
+  /** Find the scrolling ancestor of this view (the app shell content area). */
+  private getScrollContainer(): HTMLElement | null {
+    if (this.scrollContainer?.isConnected) return this.scrollContainer;
+
+    let el = this.host.nativeElement.parentElement;
+    while (el) {
+      const overflowY = getComputedStyle(el).overflowY;
+      if (overflowY === 'auto' || overflowY === 'scroll') {
+        this.scrollContainer = el;
+        return el;
+      }
+      el = el.parentElement;
+    }
+
+    this.scrollContainer = null;
+    return null;
+  }
+
+  /** Remember which photo sits at the top of the viewport and where exactly. */
+  private captureScrollAnchor(): ScrollAnchor | null {
+    const container = this.getScrollContainer();
+    if (!container) return null;
+
+    const containerTop = container.getBoundingClientRect().top;
+    const photos = this.sortedPhotos();
+
+    for (const cell of this.photoCells) {
+      const el = cell.nativeElement as HTMLElement;
+      const rect = el.getBoundingClientRect();
+      if (rect.bottom <= containerTop) continue; // scrolled past
+
+      const photo = photos[Number(el.dataset['index'])];
+      if (photo) {
+        return {
+          encryptedName: photo.encryptedName,
+          offset: rect.top - containerTop,
+          scrollTop: container.scrollTop,
+        };
+      }
+      break;
+    }
+
+    return { encryptedName: null, offset: 0, scrollTop: container.scrollTop };
+  }
+
+  /** Scroll back so the anchored photo keeps its previous position on screen. */
+  private restoreScrollAnchor(anchor: ScrollAnchor | null): void {
+    const container = this.getScrollContainer();
+    if (!container || !anchor) return;
+
+    if (anchor.encryptedName) {
+      const newIndex = this.sortedPhotos().findIndex(p => p.encryptedName === anchor.encryptedName);
+      if (newIndex >= 0) {
+        const cell = this.photoCells.find(c => Number(c.nativeElement.dataset['index']) === newIndex);
+        if (cell) {
+          const rect = (cell.nativeElement as HTMLElement).getBoundingClientRect();
+          const containerTop = container.getBoundingClientRect().top;
+          container.scrollTop += (rect.top - containerTop) - anchor.offset;
+          return;
+        }
+      }
+    }
+
+    // The anchored photo is gone (deleted elsewhere) – keep the raw offset.
+    const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
+    container.scrollTop = Math.min(anchor.scrollTop, maxScroll);
   }
 
   private setupIntersectionObserver(): void {
@@ -424,6 +610,13 @@ export class AlbumViewComponent implements OnInit, OnDestroy, AfterViewInit {
       if (this.infoOverlayEl) {
         this.infoOverlayEl.remove();
         this.infoOverlayEl = null;
+      }
+
+      // A sync finished while the viewer was open – adopt it now.
+      const pending = this.pendingSyncUpdate;
+      if (pending) {
+        this.pendingSyncUpdate = null;
+        void this.applySyncUpdate(pending);
       }
     });
 

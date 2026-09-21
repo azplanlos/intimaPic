@@ -341,6 +341,17 @@ export class PhotoService {
   }
 
   /**
+   * Drop every decrypted blob URL of a single photo.
+   * Call this when the underlying file changed in cloud storage, so the
+   * next request decrypts the new content instead of reusing a stale image.
+   */
+  invalidatePhoto(encryptedName: string): void {
+    this.thumbnailCache.delete(`grid:${encryptedName}`);
+    this.thumbnailCache.delete(`preview:${encryptedName}`);
+    this.fullResCache.delete(`full:${encryptedName}`);
+  }
+
+  /**
    * Revoke all cached blob URLs (call on vault lock).
    */
   clearCache(): void {

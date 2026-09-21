@@ -61,6 +61,19 @@ export class CacheManager {
     this.maybeEvict(vaultId).catch(() => {});
   }
 
+  /**
+   * Delete a cached thumbnail.
+   * Used when the underlying file changed in cloud storage, so the next
+   * request re-fetches instead of serving a stale image.
+   */
+  async deleteThumbnail(key: string): Promise<void> {
+    try {
+      await swCacheDb.thumbnails.delete(key);
+    } catch {
+      // Cache deletion is best-effort
+    }
+  }
+
   // ─── Directory Listings ────────────────────────────────────────────────────
 
   /**

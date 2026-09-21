@@ -122,6 +122,12 @@ export interface DirectoryUpdatedPush {
   directoryId: string;
   addedCount: number;
   removedCount: number;
+  /**
+   * Entries that still exist under the same encrypted name but whose size
+   * changed (file was replaced). Optional so that a client running against an
+   * older SW build still parses the message.
+   */
+  changedCount?: number;
 }
 
 export interface ConnectivityChangedPush {

@@ -24,6 +24,21 @@ export class SwError extends Error {
 }
 
 /**
+ * Details of a directory change detected by a background sync in the SW.
+ */
+export interface DirectoryUpdate {
+  directoryId: string;
+  /** Entries that appeared since the last sync. */
+  addedCount: number;
+  /** Entries that disappeared since the last sync. */
+  removedCount: number;
+  /** Entries whose underlying file was replaced (same name, different size). */
+  changedCount: number;
+}
+
+export type DirectoryUpdateListener = (update: DirectoryUpdate) => void;
+
+/**
  * Interface for the key provider (to avoid circular dependency with CryptoService).
  */
 export interface SwKeyProvider {
@@ -48,8 +63,8 @@ export class SwClientService {
   private readonly _online = signal(navigator.onLine);
   readonly online = this._online.asReadonly();
 
-  /** Callback for directory update pushes */
-  private directoryUpdateCallback: ((directoryId: string, added: number, removed: number) => void) | null = null;
+  /** Listeners for directory update pushes */
+  private readonly directoryUpdateListeners = new Set<DirectoryUpdateListener>();
 
   /** Key provider (set by VaultService after DI resolution) */
   private keyProvider: SwKeyProvider | null = null;
@@ -81,10 +96,16 @@ export class SwClientService {
   }
 
   /**
-   * Register a callback for directory update notifications.
+   * Register a listener for directory update notifications.
+   * The SW pushes these after a background revalidation found changes.
+   *
+   * @returns An unsubscribe function – call it when the listener goes away.
    */
-  onDirectoryUpdate(callback: (directoryId: string, added: number, removed: number) => void): void {
-    this.directoryUpdateCallback = callback;
+  onDirectoryUpdate(listener: DirectoryUpdateListener): () => void {
+    this.directoryUpdateListeners.add(listener);
+    return () => {
+      this.directoryUpdateListeners.delete(listener);
+    };
   }
 
   // ─── Lifecycle Commands ────────────────────────────────────────────────────
@@ -382,11 +403,22 @@ export class SwClientService {
       if (!message || !message.type) return;
 
       switch (message.type) {
-        case 'DIRECTORY_UPDATED':
-          if (this.directoryUpdateCallback) {
-            this.directoryUpdateCallback(message.directoryId, message.addedCount, message.removedCount);
+        case 'DIRECTORY_UPDATED': {
+          const update: DirectoryUpdate = {
+            directoryId: message.directoryId,
+            addedCount: message.addedCount,
+            removedCount: message.removedCount,
+            changedCount: message.changedCount ?? 0,
+          };
+          for (const listener of [...this.directoryUpdateListeners]) {
+            try {
+              listener(update);
+            } catch (err) {
+              console.error('[SwClient] Directory update listener failed:', err);
+            }
           }
           break;
+        }
 
         case 'CONNECTIVITY_CHANGED':
           this._online.set(message.online);
