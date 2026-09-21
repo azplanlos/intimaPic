@@ -1,17 +1,17 @@
 import { TestBed } from '@angular/core/testing';
 import { OneDriveAdapter } from './onedrive-adapter.service';
 
-// Mock fetch globally
-const mockFetch = jasmine.createSpy('fetch');
-(global as any).fetch = mockFetch;
-
 describe('OneDriveAdapter - Token Validation', () => {
   let service: OneDriveAdapter;
+  let mockFetch: jasmine.Spy;
 
   beforeEach(() => {
+    // Stub the global fetch the adapter calls. Jasmine restores the original
+    // after every spec, so other suites keep the real implementation.
+    mockFetch = spyOn(globalThis, 'fetch') as unknown as jasmine.Spy;
+
     TestBed.configureTestingModule({});
     service = TestBed.inject(OneDriveAdapter);
-    mockFetch.calls.reset();
   });
 
   describe('validateAndRefreshToken', () => {
